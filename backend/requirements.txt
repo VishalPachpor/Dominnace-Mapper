@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+python-jose
+bcrypt
+redis
+pydantic
+ccxt
+python-dotenv
+websocket-client
+stripe
+alembic
+httpx

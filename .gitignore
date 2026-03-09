@@ -1,0 +1,32 @@
+# Environment Variables
+.env
+.env.local
+.env.production
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+.venv/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Next.js
+.next/
+out/
+build/
+
+# IDE/OS
+.DS_Store
+.vscode/
+.idea/
+
+# Custom
+DominanceEA.ex5

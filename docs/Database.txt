@@ -1,0 +1,445 @@
+Below is a complete production-level database design for your Trading Bot SaaS (TradingView → Webhook → Strategy → Execution).
+This database must support:
+	•	Users
+	•	Exchange API keys
+	•	Signals from TradingView
+	•	Trades
+	•	Positions
+	•	Bot state (BE, reversal, etc.)
+	•	Subscriptions
+	•	Logs
+
+Recommended DB:
+
+PostgreSQL
+
+Because it is reliable, scalable, and widely used in trading systems.
+
+⸻
+
+1️⃣ Database Architecture Overview
+
+Your database will contain 7 main modules:
+
+Users
+Subscriptions
+API Keys
+Signals
+Trades
+Positions
+Bot State
+Logs
+
+System flow:
+
+TradingView Alert
+        ↓
+Webhook API
+        ↓
+Signals table
+        ↓
+Strategy Engine
+        ↓
+Trades / Positions
+        ↓
+Execution Engine
+
+
+⸻
+
+2️⃣ Users Table
+
+Stores platform users.
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    plan TEXT,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+Fields:
+
+Column	Purpose
+id	user identifier
+email	login email
+password_hash	encrypted password
+plan	subscription plan
+is_active	account status
+
+
+⸻
+
+3️⃣ Subscriptions Table
+
+Tracks payments.
+
+CREATE TABLE subscriptions (
+    id UUID PRIMARY KEY,
+    user_id UUID REFERENCES users(id),
+    plan_name TEXT,
+    status TEXT,
+    start_date TIMESTAMP,
+    end_date TIMESTAMP
+);
+
+Example plans:
+
+Starter
+Pro
+Elite
+
+
+⸻
+
+4️⃣ Exchange API Keys Table
+
+Users connect their exchange.
+
+Keys must be encrypted.
+
+CREATE TABLE api_keys (
+    id UUID PRIMARY KEY,
+    user_id UUID REFERENCES users(id),
+    exchange TEXT,
+    api_key TEXT,
+    api_secret TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+Fields:
+
+Column	Purpose
+exchange	Binance / Bybit
+api_key	encrypted
+api_secret	encrypted
+
+Security rule:
+
+API keys must have trading permission only
+Withdrawals disabled
+
+
+⸻
+
+5️⃣ Signals Table
+
+Stores signals from TradingView.
+
+CREATE TABLE signals (
+    id SERIAL PRIMARY KEY,
+    symbol TEXT,
+    action TEXT,
+    price NUMERIC,
+    strategy TEXT,
+    received_at TIMESTAMP DEFAULT NOW()
+);
+
+Example row:
+
+symbol	action	price
+BTCUSDT	buy	68000
+
+This table helps:
+	•	debug alerts
+	•	replay signals
+	•	analyze strategy
+
+⸻
+
+6️⃣ Trades Table
+
+Stores executed trades.
+
+CREATE TABLE trades (
+    id UUID PRIMARY KEY,
+    user_id UUID REFERENCES users(id),
+    symbol TEXT,
+    side TEXT,
+    entry_price NUMERIC,
+    stop_loss NUMERIC,
+    take_profit NUMERIC,
+    quantity NUMERIC,
+    status TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+Trade status values:
+
+OPEN
+CLOSED
+STOPPED
+TAKE_PROFIT
+
+Example record:
+
+side	entry	SL	TP
+BUY	68000	67900	68100
+
+
+⸻
+
+7️⃣ Positions Table
+
+Tracks active positions.
+
+This is important for your break-even and reversal logic.
+
+CREATE TABLE positions (
+    id UUID PRIMARY KEY,
+    user_id UUID REFERENCES users(id),
+    symbol TEXT,
+    side TEXT,
+    entry_price NUMERIC,
+    sl NUMERIC,
+    tp NUMERIC,
+    quantity NUMERIC,
+    is_reversal BOOLEAN DEFAULT FALSE,
+    be_moved BOOLEAN DEFAULT FALSE,
+    opened_at TIMESTAMP DEFAULT NOW()
+);
+
+Fields:
+
+Column	Purpose
+is_reversal	true if reversal trade
+be_moved	break-even triggered
+
+
+⸻
+
+8️⃣ Bot State Table
+
+Stores strategy state.
+
+Because your strategy has states:
+
+IDLE
+OPEN_TRADE
+REVERSAL
+STANDBY
+
+Table:
+
+CREATE TABLE bot_state (
+    user_id UUID REFERENCES users(id),
+    symbol TEXT,
+    state TEXT,
+    reversal_used BOOLEAN,
+    standby BOOLEAN,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+Example row:
+
+symbol	state
+BTCUSDT	OPEN_TRADE
+
+
+⸻
+
+9️⃣ Trade Events Table
+
+Tracks trade events.
+
+Useful for debugging.
+
+CREATE TABLE trade_events (
+    id SERIAL PRIMARY KEY,
+    trade_id UUID REFERENCES trades(id),
+    event_type TEXT,
+    event_time TIMESTAMP DEFAULT NOW(),
+    description TEXT
+);
+
+Example events:
+
+ENTRY_PLACED
+BREAK_EVEN_TRIGGERED
+REVERSAL_EXECUTED
+TAKE_PROFIT
+STOP_LOSS
+
+
+⸻
+
+🔟 Logs Table
+
+Logs errors and system messages.
+
+CREATE TABLE system_logs (
+    id SERIAL PRIMARY KEY,
+    level TEXT,
+    message TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+Levels:
+
+INFO
+WARNING
+ERROR
+
+
+⸻
+
+11️⃣ Indexing (Important)
+
+To speed queries:
+
+CREATE INDEX idx_trades_user
+ON trades(user_id);
+
+CREATE INDEX idx_positions_symbol
+ON positions(symbol);
+
+CREATE INDEX idx_signals_symbol
+ON signals(symbol);
+
+
+⸻
+
+12️⃣ Relationships Diagram
+
+Database relationships:
+
+Users
+  │
+  ├── Subscriptions
+  ├── API Keys
+  ├── Trades
+  │      └── Trade Events
+  │
+  ├── Positions
+  │
+  └── Bot State
+
+Signals (independent)
+
+
+⸻
+
+13️⃣ Data Flow Example
+
+Example trading flow.
+
+Step 1:
+
+TradingView alert received.
+
+Insert:
+
+signals
+
+Step 2:
+
+Strategy engine processes.
+
+Insert:
+
+trades
+positions
+
+Step 3:
+
+Execution engine updates.
+
+Update:
+
+positions
+trades
+trade_events
+
+
+⸻
+
+14️⃣ Example Query (User Trades)
+
+Get trades for user.
+
+SELECT *
+FROM trades
+WHERE user_id = 'USER_ID'
+ORDER BY created_at DESC;
+
+
+⸻
+
+15️⃣ Example Query (Active Positions)
+
+SELECT *
+FROM positions
+WHERE symbol='BTCUSDT';
+
+
+⸻
+
+16️⃣ Example Query (Performance)
+
+Calculate PnL.
+
+SELECT
+SUM(take_profit - entry_price)
+FROM trades
+WHERE status='TAKE_PROFIT';
+
+
+⸻
+
+17️⃣ Backup Strategy
+
+Always backup database.
+
+Use:
+
+daily backups
+replication
+
+Recommended tools:
+
+pg_dump
+AWS RDS snapshots
+
+
+⸻
+
+18️⃣ Database Scaling
+
+If platform grows:
+
+Read replicas
+Partitioned trades table
+Redis cache
+
+This supports 100k+ users.
+
+⸻
+
+Final Database Architecture
+
+users
+subscriptions
+api_keys
+signals
+trades
+positions
+bot_state
+trade_events
+system_logs
+
+This database supports:
+
+✔ multi-user trading
+✔ DOM strategy state tracking
+✔ full trade history
+✔ subscription management
+
+⸻
+
+If you want, I can next show you:
+	•	Frontend dashboard architecture
+	•	Complete GitHub repo structure
+	•	How to deploy entire system on AWS
+	•	How to scale bot to 10k users safely.

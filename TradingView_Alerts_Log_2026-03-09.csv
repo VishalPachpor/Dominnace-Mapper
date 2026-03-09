@@ -1,0 +1,61 @@
+Alert ID,Ticker,Name,Description,Time,Webhook status
+4189516152,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""68022.42""
+}",2026-03-09T12:26:00Z,Webhook successfully delivered
+4189516152,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""67552.29""
+}",2026-03-09T11:17:26Z,Webhook delivery failed — request took too long and timed out
+4189516152,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""67619.20""
+}",2026-03-09T11:16:32Z,Webhook delivery failed — 503 Service Temporarily Unavailable
+4189497821,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""67682.57""
+}",2026-03-09T11:02:00Z,Webhook delivery failed — request took too long and timed out
+4189497821,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""67722.04""
+}",2026-03-09T10:39:40Z,Webhook delivery failed — 503 Service Temporarily Unavailable
+4189497821,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""67933.32""
+}",2026-03-09T10:16:54Z,Webhook delivery failed — 503 Service Temporarily Unavailable
+4189497821,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""68006.90""
+}",2026-03-09T10:03:37Z,Webhook delivery failed — request took too long and timed out
+4189516152,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""67924.36""
+}",2026-03-09T09:30:57Z,Webhook successfully delivered
+4189516152,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""67718.33""
+}",2026-03-09T08:49:38Z,Webhook successfully delivered
+4189516152,"BINANCE:BTCUSDT, 1m",DM,"{
+    ""secret"": ""superwebhooksecret"",
+    ""symbol"": ""BTCUSDT"",
+    ""side"": ""BUY"",
+    ""price"": ""67409.09""
+}",2026-03-09T08:16:41Z,Webhook successfully delivered
