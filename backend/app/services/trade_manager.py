@@ -36,9 +36,9 @@ class TradeManager:
             active_users = db.query(User).filter(User.is_active == True).all()
             for user in active_users:
                 try:
-                    # Skip fake/test accounts by checking for valid UUID format
+                    # Skip fake/test accounts safely
                     meta_id = getattr(user, "meta_account_id", None)
-                    if meta_id and meta_id.startswith("mt5-"):
+                    if meta_id and isinstance(meta_id, str) and meta_id.startswith("mt5-"):
                         logger.warning(f"Skipping test user {user.id} with fake account id: {meta_id}")
                         continue
 

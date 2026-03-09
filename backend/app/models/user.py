@@ -21,5 +21,4 @@ class User(Base):
     mt5_equity = Column(Float, default=0.0)
 
     is_active = Column(Boolean, default=True)
-    meta_account_id = Column(String, nullable=True)
 
