@@ -74,6 +74,16 @@ class TradeManager:
                             f"<b>Account:</b> {user.id[:8]}..."
                         )
                         await send_telegram_message(alert_msg)
+                    else:
+                        # Trade was skipped or rejected by the engine (e.g. no EA token)
+                        logger.warning(f"Trade skipped for user {user.id} (no response from engine)")
+                        alert_msg = (
+                             f"⚠️ <b>SIGNAL RECEIVED BUT SKIPPED</b>\n\n"
+                             f"<b>Symbol:</b> {trade['symbol']}\n"
+                             f"<b>Reason:</b> Your MT5 Expert Advisor is not connected or Account not set.\n"
+                             f"<b>Account:</b> {user.id[:8]}..."
+                        )
+                        await send_telegram_message(alert_msg)
 
                 except Exception as e:
                     logger.error(f"Failed to execute trade for user {user.id}: {e}")
