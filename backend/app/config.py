@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 REDIS_URL = os.getenv("REDIS_URL")
 
 JWT_SECRET = os.getenv("JWT_SECRET")
