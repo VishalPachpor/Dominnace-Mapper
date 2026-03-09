@@ -16,6 +16,20 @@ class EAConfirm(BaseModel):
     status: str
     price: float
 
+class SYNC_TRADE(BaseModel):
+    ticket: int
+    id: str  # This is our internal UUID
+    symbol: str
+    side: str
+    entry: float
+    exit: float
+    pnl: float
+    profit_points: float
+    closed_at: str
+
+class EASync(BaseModel):
+    closed_trades: List[SYNC_TRADE]
+
 @router.get("/signals")
 def get_signals(
     ea_token: str = Header(None),
@@ -78,3 +92,37 @@ def confirm_trade(data: EAConfirm, ea_token: str = Header(None), db: Session = D
     
     logger.info(f"EA confirmed trade {data.trade_id} with status {data.status} at {data.price}")
     return {"status": "success"}
+
+@router.post("/sync-history")
+def sync_history(data: EASync, ea_token: str = Header(None), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.ea_token == ea_token).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid EA Token")
+
+    from app.services.trade_logger import log_trade
+    
+    synced_count = 0
+    for t_data in data.closed_trades:
+        # 1. Check if we already logged this trade (using the UUID as unique constraint if needed, but let's check positions table first)
+        existing_pos = db.query(Position).filter(Position.id == t_data.id, Position.user_id == user.id).first()
+        
+        if existing_pos:
+            # Move to historical trades table
+            log_trade({
+                "id": t_data.id,
+                "user_id": user.id,
+                "symbol": t_data.symbol,
+                "side": t_data.side,
+                "entry": t_data.entry,
+                "exit": t_data.exit,
+                "pnl": t_data.pnl,
+                "result": "WIN" if t_data.pnl > 0 else ("LOSS" if t_data.pnl < 0 else "BREAKEVEN")
+            })
+            
+            # Delete from active positions
+            db.delete(existing_pos)
+            synced_count += 1
+            logger.info(f"Synced and closed trade {t_data.id} for user {user.id}")
+
+    db.commit()
+    return {"status": "success", "synced": synced_count}
