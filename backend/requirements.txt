@@ -12,3 +12,4 @@ websocket-client
 stripe
 alembic
 httpx
+celery
