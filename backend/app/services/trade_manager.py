@@ -16,10 +16,15 @@ class TradeManager:
         symbol = signal.get("symbol")
         action = (signal.get("action") or signal.get("side", "")).lower()
         price = float(signal.get("price", 0))
-        
         # We will receive dom_high and dom_low from the new webhook format
         dom_high_str = signal.get("dom_high")
         dom_low_str = signal.get("dom_low")
+        
+        # New Feature: Filter strictly for DOM signals to avoid over-trading on minor UP/DOWN signals
+        signal_type = str(signal.get("signal_type", "")).upper()
+        if signal_type != "DOM":
+            logger.info(f"Skipping minor momentum signal ({signal_type}) for {symbol}. Only processing DOM signals.")
+            return
 
         if dom_high_str and dom_low_str:
             dom_high = float(dom_high_str)
