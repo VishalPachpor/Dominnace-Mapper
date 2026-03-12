@@ -20,7 +20,7 @@ def is_forex_symbol(symbol: str):
 class ExecutionEngine:
 
     def __init__(self):
-        # Crypto engine (Binance mock for now)
+        # Crypto engine (Binance)
         self.crypto_exchange = ccxt.binance({
             'enableRateLimit': True,
         })
@@ -30,32 +30,43 @@ class ExecutionEngine:
     async def open_trade(self, user, trade_dict):
         symbol = trade_dict["symbol"]
         side = trade_dict["side"]
-        volume = 0.01 # Minimum valid lot size for MT5 CFD instruments
-        sl = trade_dict.get("sl", 0)
-        tp = trade_dict.get("tp", 0)
+        volume = float(trade_dict.get("volume", 0.01))
+        sl = float(trade_dict.get("sl", 0))
+        tp = float(trade_dict.get("tp", 0))
 
         logger.info(f"ExecutionEngine: Routing trade {side} {volume} {symbol} for User {user.id}")
 
         if is_forex_symbol(symbol):
-            # EA Bridge Safety Check
-            if not getattr(user, "ea_token", None):
-                logger.warning(f"User {user.id} has no EA Token. MT5 Expert Advisor is not connected.")
-                return None
-            
-            # Risk Control Example
-            FOREX_MAX_VOLUME = 5.0
-            if volume > FOREX_MAX_VOLUME:
-                logger.warning(f"Volume {volume} exceeds safety limits. Capping at {FOREX_MAX_VOLUME}")
-                volume = FOREX_MAX_VOLUME
+            # ── Guard 1: MetaApi terminal must be connected ───────────────────
+            mt_status = getattr(user, "mt_status", None)
+            meta_account_id = getattr(user, "meta_account_id", None)
 
-            logger.info(f"Enqueuing {symbol} for MT5 EA Bridge execution")
-            return {
-                "orderId": str(uuid.uuid4()),
-                "status": "pending_ea"
-            }
+            if not meta_account_id or mt_status != "connected":
+                logger.warning(
+                    f"User {user.id} MT5 terminal not ready "
+                    f"(status={mt_status}, account={meta_account_id}). Skipping trade."
+                )
+                return None
+
+            # ── Guard 2: Duplicate position check ─────────────────────────────
+            from app.services.metaapi_service import has_open_position, execute_trade
+            if await has_open_position(meta_account_id, symbol):
+                logger.info(f"Duplicate guard: skipping {symbol} — position already open.")
+                return {"status": "skipped", "reason": "duplicate_position"}
+
+            # ── Execute via MetaApi ───────────────────────────────────────────
+            result = await execute_trade(
+                account_id=meta_account_id,
+                symbol=symbol,
+                side=side,
+                volume=volume,
+                sl=sl,
+                tp=tp
+            )
+            return {"status": "success", "broker": "metaapi", "result": result}
 
         else:
-            # Route to Crypto
+            # Route to Crypto (Binance)
             logger.info(f"Routing {symbol} to CryptoEngine (Binance)")
             try:
                 if side.lower() == "buy":
@@ -68,3 +79,4 @@ class ExecutionEngine:
             except Exception as e:
                 logger.error(f"Error executing crypto trade: {e}")
                 return None
+

@@ -13,3 +13,4 @@ stripe
 alembic
 httpx
 celery
+cryptography
