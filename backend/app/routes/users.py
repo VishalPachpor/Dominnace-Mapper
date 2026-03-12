@@ -79,8 +79,18 @@ async def connect_mt5(
     except Exception as e:
         user.mt_status = "error"
         db.commit()
-        logger.error(f"MetaApi provisioning failed for user {user.id}: {e}")
-        raise HTTPException(status_code=500, detail=f"MetaApi provisioning failed: {str(e)}")
+        error_msg = str(e)
+        import httpx
+        if isinstance(e, httpx.HTTPStatusError):
+            try:
+                error_msg = e.response.json().get("message", e.response.text)
+            except Exception:
+                error_msg = e.response.text
+        elif isinstance(e, httpx.ReadTimeout):
+            error_msg = "MetaApi timed out validating your broker credentials. The server might be unreachable or the credentials may be incorrect."
+        
+        logger.error(f"MetaApi provisioning failed for user {user.id}: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"MetaApi provisioning failed: {error_msg}")
 
     # 3. Trigger deploy
     try:

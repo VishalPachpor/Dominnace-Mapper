@@ -57,7 +57,7 @@ async def provision_account(user) -> str:
         "magic": 12345,
         "tags": ["DominanceMapper"]
     }
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
             f"{PROVISION_URL}/users/current/accounts",
             json=payload, headers=_headers()
