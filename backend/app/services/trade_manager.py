@@ -74,7 +74,7 @@ class TradeManager:
                         alert_msg = (
                             f"🟢 <b>NEW TRADE EXECUTED</b>\n\n"
                             f"<b>Symbol:</b> {trade['symbol']}\n"
-                            f"<b>Side:</b> {trade['side'].upper()}\n"
+                            f"<b>Side:</b> {str(trade['side']).upper()}\n"
                             f"<b>Entry:</b> {trade['entry']}\n"
                             f"<b>Account:</b> {user.id[:8]}..."
                         )

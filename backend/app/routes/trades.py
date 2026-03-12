@@ -84,7 +84,7 @@ def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(
     # 2. Total PNL & Win Rate from closed trades (historical)
     trades = db.query(Trade).filter(Trade.user_id == user.id).all()
     realized_pnl = sum([t.pnl for t in trades if t.pnl is not None])
-    total_pnl = round(realized_pnl + unrealized_pnl, 2)
+    total_pnl = round(float(realized_pnl + unrealized_pnl), 2)
 
     wins = len([t for t in trades if t.result == "WIN"])
     total_closed = len(trades)
@@ -98,18 +98,18 @@ def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(
             historical_equity += t.pnl
         equity_data.append({
             "time": t.created_at.strftime("%b %d"),
-            "pnl": round(historical_equity, 2)
+            "pnl": round(float(historical_equity), 2)
         })
 
     if not equity_data:
         equity_data = [{"time": "Today", "pnl": round(current_equity, 2)}]
 
     return {
-        "account_balance": round(current_equity, 2),
+        "account_balance": round(float(current_equity), 2),
         "active_trades": active_trades,
-        "win_rate": round(win_rate, 2),
+        "win_rate": round(float(win_rate), 2),
         "total_pnl": total_pnl,
-        "unrealized_pnl": round(unrealized_pnl, 2),
-        "equity_curve": equity_data[-20:]
+        "unrealized_pnl": round(float(unrealized_pnl), 2),
+        "equity_curve": list(equity_data)[-20:]
     }
 
