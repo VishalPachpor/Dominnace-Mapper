@@ -8,7 +8,7 @@
 
 #include <Trade\Trade.mqh>
 
-input string API_URL = "https://sorriest-mui-appliable.ngrok-free.dev";
+input string API_URL = "https://lingering-moon-9343.fly.dev";
 input string EA_TOKEN = "";
 
 CTrade trade;
@@ -54,6 +54,7 @@ void OnDeinit(const int reason)
 void OnTimer()
   {
    FetchSignals();
+   SyncHistory();
   }
 
 //+------------------------------------------------------------------+
@@ -223,6 +224,77 @@ void ConfirmTrade(string trade_id, string statusStr, double price)
    else
      {
       Print("Failed to confirm trade with server. Code: ", res);
+     }
+  }
+//+------------------------------------------------------------------+
+//| Sync Closed Trades with Backend                                  |
+//+------------------------------------------------------------------+
+void SyncHistory()
+  {
+   if(!HistorySelect(TimeCurrent()-86400, TimeCurrent())) return;
+   
+   int total = HistoryDealsTotal();
+   string closed_list = "";
+   int count = 0;
+   
+   for(int i=total-1; i>=0; i--)
+     {
+      ulong ticket = HistoryDealGetTicket(i);
+      string comment = HistoryDealGetString(ticket, DEAL_COMMENT);
+      
+      // Look for our bot's comment "DominanceBot uuid"
+      if(StringFind(comment, "DominanceBot ") == 0)
+        {
+         string trade_uuid = StringSubstr(comment, 13);
+         long type = HistoryDealGetInteger(ticket, DEAL_TYPE);
+         long entry_type = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+         
+         // We only care about DEAL_ENTRY_OUT (closures)
+         if(entry_type == DEAL_ENTRY_OUT)
+           {
+            double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+            double price = HistoryDealGetDouble(ticket, DEAL_PRICE);
+            string symbol = HistoryDealGetString(ticket, DEAL_SYMBOL);
+            
+            // Construct a mini JSON object for this trade
+            string trade_json = "{\"ticket\":" + IntegerToString(ticket) + 
+                                ",\"id\":\"" + trade_uuid + "\"" +
+                                ",\"symbol\":\"" + symbol + "\"" +
+                                ",\"side\":\"" + (type == DEAL_TYPE_BUY ? "sell" : "buy") + "\"" + // Closure side is opposite
+                                ",\"entry\":0.0,\"exit\":" + DoubleToString(price) + 
+                                ",\"pnl\":" + DoubleToString(profit) + 
+                                ",\"profit_points\":0.0,\"closed_at\":\"\"}";
+            
+            if(count > 0) closed_list += ",";
+            closed_list += trade_json;
+            count++;
+            
+            if(count >= 10) break; // Batch of 10
+           }
+        }
+     }
+     
+   if(count > 0)
+     {
+      ReportClosure(closed_list);
+     }
+  }
+
+void ReportClosure(string json_list)
+  {
+   string url = API_URL + "/api/ea/sync-history";
+   string headers = "ea-token: " + EA_TOKEN + "\r\nContent-Type: application/json\r\n";
+   string payload = "{\"closed_trades\":[" + json_list + "]}";
+   
+   char post[], result[];
+   StringToCharArray(payload, post);
+   ArrayResize(post, ArraySize(post)-1); 
+   
+   string result_headers;
+   int res = WebRequest("POST", url, headers, 5000, post, result, result_headers);
+   if(res == 200)
+     {
+      // Print("History synced successfully.");
      }
   }
 //+------------------------------------------------------------------+
