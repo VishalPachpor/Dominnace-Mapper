@@ -63,7 +63,7 @@ async def provision_account(user) -> str:
             json=payload, headers=_headers()
         )
         resp.raise_for_status()
-        account_id = resp.json()["id"]
+        account_id = resp.json().get("_id", resp.json().get("id"))
         logger.info(f"Provisioned MetaApi account {account_id} for user {user.id}")
         return account_id
 
