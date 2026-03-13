@@ -1,0 +1,33 @@
+import asyncio
+import httpx
+
+user_token = "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiJmZWU2YzJmYzAyMmQ4YzJkODBlNDhiZDcyYWVjZWQ5MiIsImFjY2Vzc1J1bGVzIjpbeyJpZCI6InRyYWRpbmctYWNjb3VudC1tYW5hZ2VtZW50LWFwaSIsIm1ldGhvZHMiOlsidHJhZGluZy1hY2NvdW50LW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiLCJ3cml0ZXIiXSwicmVzb3VyY2VzIjpbIio6JFVTRVJfSUQkOioiXX0seyJpZCI6Im1ldGFhcGktcmVzdC1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiLCJ3cml0ZXIiXSwicmVzb3VyY2VzIjpbIio6JFVTRVJfSUQkOioiXX0seyJpZCI6Im1ldGFhcGktcnBjLWFwaSIsIm1ldGhvZHMiOlsibWV0YWFwaS1hcGk6d3M6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiLCJ3cml0ZXIiXSwicmVzb3VyY2VzIjpbIio6JFVTRVJfSUQkOioiXX0seyJpZCI6Im1ldGFhcGktcmVhbC10aW1lLXN0cmVhbWluZy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyIqOiRVU0VSX0lEJDoqIl19LHsiaWQiOiJtZXRhc3RhdHMtYXBpIiwibWV0aG9kcyI6WyJtZXRhc3RhdHMtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiLCJ3cml0ZXIiXSwicmVzb3VyY2VzIjpbIio6JFVTRVJfSUQkOioiXX0seyJpZCI6InJpc2stbWFuYWdlbWVudC1hcGkiLCJtZXRob2RzIjpbInJpc2stbWFuYWdlbWVudC1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciIsIndyaXRlciJdLCJyZXNvdXJjZXMiOlsiKjokVVNFUl9JRCQ6KiJdfSx7ImlkIjoiY29weWZhY3RvcnktYXBpIiwibWV0aG9kcyI6WyJjb3B5ZmFjdG9yeS1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciIsIndyaXRlciJdLCJyZXNvdXJjZXMiOlsiKjokVVNFUl9JRCQ6KiJdfSx7ImlkIjoibXQtbWFuYWdlci1hcGkiLCJtZXRob2RzIjpbIm10LW1hbmFnZXItYXBpOnJlc3Q6ZGVhbGluZzoqOioiLCJtdC1tYW5hZ2VyLWFwaTpyZXN0OnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyIqOiRVU0VSX0lEJDoqIl19LHsiaWQiOiJiaWxsaW5nLWFwaSIsIm1ldGhvZHMiOlsiYmlsbGluZy1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciJdLCJyZXNvdXJjZXMiOlsiKjokVVNFUl9JRCQ6KiJdfV0sImlnbm9yZVJhdGVMaW1pdHMiOmZhbHNlLCJ0b2tlbklkIjoiMjAyMTAyMTMiLCJpbXBlcnNvbmF0ZWQiOmZhbHNlLCJyZWFsVXNlcklkIjoiZmVlNmMyZmMwMjJkOGMyZDgwZTQ4YmQ3MmFlY2VkOTIiLCJpYXQiOjE3NzMzNDEyOTcsImV4cCI6MTc4MTExNzI5N30.TaoFqcgzERR1MQqkGmZGEp1AtV12ELrZwjjuTh4VGWXYp4WmNnegcxkRT7a2z_y6xRLTaCN_jujNkZ3ReVrC1EhHtX11hlIm2al6n-H-BEgHoj8B_W5agLz-GeW52cZKSOYLQMD__gCNb6Mz_BCcCrFQitswACspFU3J5jpSyNJYsnFSS4sKJO23mGqVEs-LxrA1sgarLZnFf5PBVXneHrReKiB9yl-XgJNPgLTe__s6ouqPoL-8PWlFTUJ8QYfZlbKMzfk6Bb2xcxUtIhMr8prC3XX_eCOnsAjZbRLLNiXB95MMR-83MpQsb1Vynwyt1XXon5zcBOX4l25J9ZfkhHYrRW73PU-WnQMXIVHbOd5FLZsE-qYFNXtZlm55mtJuNrRT3M7h69lTPpczlcfVMaUVd62uK3kGhpMImLUcu6aYx2X_mSc-yP8zZfkWI7Zv0ssTnihsZ_wUWUf27s6IrUhk6_JUVFFtQ5qHDrAaBiABZgLFIq_y_sHaKdDCL6yhiQjRCpYdfJoWW_LzeT1BVYOEVnNFGDd7ZKl_BcbEdTnK8AsNd8RxEb-UCci9pfnIvkHOakXitEHf7EGNEzAf3iyvp3FQQGEmrgYOcCPXIIctJVPzHM_WFVSCXNUpOtA7iaiDhZt3ju4NJm812sIFacBOn2E_k-grE_s8-w-rsEo"
+
+async def main():
+    try:
+        url = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts"
+        headers = {"auth-token": user_token, "Content-Type": "application/json"}
+        payload = {
+            "name": "user-test456",
+            "type": "cloud",
+            "login": "279223",
+            "password": "testpassword123", # DONT use the real password in test
+            "server": "FusionMarkets-Demo",
+            "platform": "mt5",
+            "magic": 12345,
+            "tags": ["DominanceMapper"]
+        }
+        print("Sending request to", url)
+        # using a short timeout to replicate backend behavior
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            print("Status code:", resp.status_code)
+            print("Response:", resp.text)
+            resp.raise_for_status()
+    except Exception as e:
+        print("EXCEPTION TYPE:", type(e))
+        print("EXCEPTION DETAILS:", str(e))
+        if isinstance(e, httpx.HTTPStatusError):
+            print("RESPONSE BODY:", e.response.text)
+
+asyncio.run(main())
