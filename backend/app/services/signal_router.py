@@ -39,6 +39,17 @@ async def route_signal(data: dict, db: Session):
     redis_client.setex(f"signal_processed:{signal_hash}", 60, "1")
 
     # ── Bot Lookup ──
+    # Priority 1: Explicit "bot" slug in payload (most reliable — add to TradingView alert)
+    # Priority 2: Signal type alias map (DOM → dm-bull, SMC → smc-buy, etc.)
+    # Priority 3: Exact slug match on signal_type
+    # Priority 4: Partial name contains signal_type
+    SIGNAL_TYPE_MAP = {
+        "dom": "dm-bull",
+        "dominance": "dm-bull",
+        "smc": "smc-buy",
+        "breakout": "breakout-pro",
+    }
+
     bot_slug = data.get("bot")
     signal_type = str(data.get("signal_type", "")).lower()
 
@@ -49,12 +60,22 @@ async def route_signal(data: dict, db: Session):
             signals_dropped_total.labels(reason="inactive_bot").inc()
             return 0
     elif signal_type:
-        bot = (
-            db.query(Bot).filter(Bot.slug == signal_type, Bot.is_active == True).first()
-            or db.query(Bot).filter(Bot.slug.contains(signal_type), Bot.is_active == True).first()
-        )
+        # Try alias map first (DOM → dm-bull), then exact slug, then name contains
+        resolved_slug = SIGNAL_TYPE_MAP.get(signal_type)
+        if resolved_slug:
+            bot = db.query(Bot).filter(Bot.slug == resolved_slug, Bot.is_active == True).first()
+            logger.info(f"[Router] Resolved signal_type '{signal_type}' → slug '{resolved_slug}'")
+        else:
+            bot = (
+                db.query(Bot).filter(Bot.slug == signal_type, Bot.is_active == True).first()
+                or db.query(Bot).filter(Bot.name.ilike(f"%{signal_type}%"), Bot.is_active == True).first()
+            )
         if not bot:
-            logger.warning(f"[Router] No active bot found for signal_type '{signal_type}'")
+            logger.warning(
+                f"[Router] No active bot found for signal_type '{signal_type}'. "
+                f"Known aliases: {list(SIGNAL_TYPE_MAP.keys())}. "
+                f"Or add '\"bot\": \"<your-bot-slug>\"' directly to your TradingView alert."
+            )
             signals_dropped_total.labels(reason="inactive_bot").inc()
             return 0
     else:
