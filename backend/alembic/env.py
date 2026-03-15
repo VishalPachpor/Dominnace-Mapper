@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.config import DATABASE_URL
 from app.database.db import Base
-from app.models import api_key, bot_state, position, signal, trade, user, subscription
+from app.models import api_key, bot_state, position, signal, trade, user, subscription, bot
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

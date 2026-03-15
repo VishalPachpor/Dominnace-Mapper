@@ -21,6 +21,20 @@ PLAN_PRICES = {
     "elite": 249.00
 }
 
+@router.get("/subscription")
+def get_user_subscription(user = Depends(get_current_user), db: Session = Depends(get_db)):
+    sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+    if not sub:
+        return {"plan": "free", "status": "none", "current_period_end": None}
+    
+    return {
+        "plan": sub.plan,
+        "status": sub.status,
+        "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
+        "payment_currency": sub.payment_currency
+    }
+
+
 @router.post("/create-payment")
 async def create_crypto_payment(
     plan: str, 

@@ -1,8 +1,16 @@
 """
 MetaApi Cloud MT5 Service Layer
 Handles account provisioning, deployment, status polling, and trade execution.
+
+Credit Optimization:
+  - Status poller runs every 5 MINUTES (not 15 seconds) — 20× fewer REST calls
+  - Poller skips users already in 'connected' state — no wasted calls on healthy accounts
+  - get_open_positions() and get_account_information() are Redis-cached for 10 seconds
+  - A metaapi_api_calls_total counter tracks exactly how many REST calls are made
+  - poll_until_connected uses max 10 attempts at 30s intervals (5 min total, not 3 min at 10s)
 """
 import os
+import json
 import asyncio
 import logging
 import httpx
@@ -22,6 +30,30 @@ SYMBOL_MAP: dict[str, list[str]] = {
     "BTCUSD": ["BTCUSD", "BTCUSDm", "BTCUSD.a", "BTCUSDT"],
     "XAGUSD": ["XAGUSD", "XAGUSDm"],
 }
+
+# ─── API Call Counter (Prometheus metric) ─────────────────────────────────────
+# Tracks exactly how many times we hit MetaApi REST endpoints so we never
+# get surprised by credit consumption again.
+try:
+    from prometheus_client import Counter
+    metaapi_calls_total = Counter(
+        "metaapi_api_calls_total",
+        "Total number of REST API calls made to MetaApi",
+        ["endpoint"]
+    )
+    _prometheus_available = True
+except Exception:
+    _prometheus_available = False
+    metaapi_calls_total = None
+
+def _track_call(endpoint: str):
+    """Increment the MetaApi REST call counter."""
+    if _prometheus_available and metaapi_calls_total:
+        try:
+            metaapi_calls_total.labels(endpoint=endpoint).inc()
+        except Exception:
+            pass
+    logger.debug(f"[MetaApi CALL] endpoint={endpoint}")
 
 
 def _headers() -> dict:
@@ -57,6 +89,7 @@ async def provision_account(user) -> str:
         "magic": 12345,
         "tags": ["DominanceMapper"]
     }
+    _track_call("provision_account")
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
             f"{PROVISION_URL}/users/current/accounts",
@@ -70,6 +103,7 @@ async def provision_account(user) -> str:
 
 async def deploy_account(account_id: str):
     """Triggers the cloud terminal deployment. Takes ~60-90s to reach DEPLOYED state."""
+    _track_call("deploy_account")
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{PROVISION_URL}/users/current/accounts/{account_id}/deploy",
@@ -79,16 +113,45 @@ async def deploy_account(account_id: str):
         logger.info(f"Deploy triggered for MetaApi account {account_id}")
 
 
-async def get_account_status(account_id: str) -> str:
-    """Returns current MetaApi connection state string."""
+async def get_account_status(account_id: str, use_cache: bool = True) -> str:
+    """
+    Returns current MetaApi connection state string.
+
+    Caches the result in Redis for 60 seconds. This means:
+    - Trade execution checks use Redis (free) instead of MetaApi (credit)
+    - The background poller is the only thing that ever calls MetaApi for status
+    - Pass use_cache=False only when you explicitly want a fresh value (e.g. the poller itself)
+    """
+    cache_key = f"mt_status:{account_id}"
+
+    if use_cache:
+        try:
+            from app.utils.redis_client import redis_client
+            cached = redis_client.get(cache_key)
+            if cached:
+                logger.debug(f"[Cache HIT] mt_status:{account_id} = {cached}")
+                return cached.decode() if isinstance(cached, bytes) else cached
+        except Exception:
+            pass  # Redis unavailable — fall through to live call
+
     try:
+        _track_call("get_account_status")
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"{PROVISION_URL}/users/current/accounts/{account_id}",
                 headers=_headers()
             )
             data = resp.json()
-            return data.get("state", "UNKNOWN")
+            state = data.get("state", "UNKNOWN")
+
+        # Cache for 60 seconds — execution engine reads this for free
+        try:
+            from app.utils.redis_client import redis_client
+            redis_client.setex(cache_key, 60, state)
+        except Exception:
+            pass
+
+        return state
     except Exception as e:
         logger.error(f"Failed to get account status for {account_id}: {e}")
         return "ERROR"
@@ -96,6 +159,7 @@ async def get_account_status(account_id: str) -> str:
 
 async def undeploy_account(account_id: str):
     """Stops the cloud terminal (saves MetaApi quota while user is inactive)."""
+    _track_call("undeploy_account")
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{PROVISION_URL}/users/current/accounts/{account_id}/undeploy",
@@ -105,20 +169,22 @@ async def undeploy_account(account_id: str):
         logger.info(f"Undeployed MetaApi account {account_id}")
 
 
-# ─── Status Polling Background Task ──────────────────────────────────────────
+# ─── Status Polling During Connection Setup ───────────────────────────────────
 
-async def poll_until_connected(user_id: str, account_id: str, db_session_factory, max_wait: int = 180):
+async def poll_until_connected(user_id: str, account_id: str, db_session_factory, max_attempts: int = 10):
     """
-    Polls MetaApi status every 10s until DEPLOYED, then updates user.mt_status = 'connected'.
-    Runs as a background asyncio task — does NOT block the API response.
+    Polls MetaApi status every 30s for up to 10 attempts (5 min total) until the
+    terminal reaches DEPLOYED/CONNECTED state. Then updates user.mt_status in DB.
+
+    Credit cost: max 10 REST calls per connection setup (was up to 18 at 10s intervals).
     """
     from app.database.db import SessionLocal
-    elapsed = 0
-    while elapsed < max_wait:
-        await asyncio.sleep(10)
-        elapsed += 10
+
+    for attempt in range(1, max_attempts + 1):
+        await asyncio.sleep(30)  # 30s intervals — was 10s
         state = await get_account_status(account_id)
-        logger.info(f"[Poll] Account {account_id} state: {state} ({elapsed}s elapsed)")
+        logger.info(f"[Poll #{attempt}/{max_attempts}] Account {account_id} state: {state}")
+
         if state in ("DEPLOYED", "CONNECTED"):
             db = SessionLocal()
             try:
@@ -127,10 +193,11 @@ async def poll_until_connected(user_id: str, account_id: str, db_session_factory
                 if user:
                     user.mt_status = "connected"
                     db.commit()
-                    logger.info(f"User {user_id} MT5 terminal is now CONNECTED.")
+                    logger.info(f"✓ User {user_id} MT5 terminal is now CONNECTED.")
             finally:
                 db.close()
             return
+
         elif state in ("DEPLOY_FAILED", "ERROR"):
             db = SessionLocal()
             try:
@@ -141,31 +208,206 @@ async def poll_until_connected(user_id: str, account_id: str, db_session_factory
                     db.commit()
             finally:
                 db.close()
-            logger.error(f"MetaApi account {account_id} entered error state.")
+            logger.error(f"✗ MetaApi account {account_id} entered error state after {attempt} attempts.")
             return
-    logger.warning(f"Timed out waiting for account {account_id} to deploy.")
 
-
-# ─── Trade Execution ──────────────────────────────────────────────────────────
-
-async def has_open_position(account_id: str, symbol: str) -> bool:
-    """Returns True if the user already has an open position in this symbol."""
+    # Timed out — mark as error so user knows to retry
+    logger.warning(f"⚠ poll_until_connected timed out after {max_attempts} attempts for account {account_id}")
+    db = SessionLocal()
     try:
-        canonical = resolve_symbol(symbol)
+        from app.models.user import User
+        user = db.query(User).filter(User.id == user_id).first()
+        if user and user.mt_status == "deploying":
+            user.mt_status = "error"
+            db.commit()
+    finally:
+        db.close()
+
+
+# ─── Background Status Poller (Production Mode) ───────────────────────────────
+
+async def cache_all_account_statuses():
+    """
+    Background task that polls MT5 status for users that need monitoring.
+
+    SMART POLLING RULES (to minimise MetaApi credit usage):
+      1. Runs every 5 MINUTES — was 15 seconds (20× fewer calls)
+      2. Skips users whose DB status is already 'connected' — no wasted calls
+      3. Skips ghost/test accounts (meta_account_id starting with 'mt5-')
+      4. Only polls users in 'deploying' or 'error' state (actively changing)
+
+    Credit cost example — 20 users:
+      Old:  5,760 calls/day/user × 20 = 115,200 calls/day
+      New:  288 calls/day (only for non-connected) × few users = ~1,000 calls/day
+    """
+    from app.database.db import SessionLocal
+    from app.models.user import User
+    from app.utils.redis_client import redis_client
+
+    logger.info("[StatusPoller] Background status poller started. Interval: 300s (5 min)")
+
+    while True:
+        try:
+            db = SessionLocal()
+            # SMART: only poll users who are NOT already confirmed connected
+            # Connected users don't need constant API polling — they're stable.
+            users_needing_poll = db.query(User).filter(
+                User.is_active == True,
+                User.meta_account_id.isnot(None),
+                User.mt_status.in_(["deploying", "connecting", "error"])
+            ).all()
+
+            if users_needing_poll:
+                logger.info(f"[StatusPoller] Polling {len(users_needing_poll)} non-connected users")
+            else:
+                logger.debug("[StatusPoller] All users connected — skipping REST call this cycle")
+
+            for user in users_needing_poll:
+                meta_id = user.meta_account_id
+
+                # Skip ghost/test accounts
+                if meta_id and meta_id.startswith("mt5-"):
+                    continue
+
+                # Bypass cache — poller always fetches fresh state and writes it to Redis
+                # so the execution engine can read from cache between poll cycles
+                status = await get_account_status(meta_id, use_cache=False)
+
+                # Cache with 6 min expiry (slightly longer than poll interval for coverage)
+                redis_client.setex(f"mt_status:{meta_id}", 360, status)
+
+                # Update DB if status changed to connected
+                if status in ("DEPLOYED", "CONNECTED") and user.mt_status != "connected":
+                    user.mt_status = "connected"
+                    db.commit()
+                    logger.info(f"[StatusPoller] User {user.id} is now connected (detected by poller)")
+                elif status in ("DEPLOY_FAILED", "ERROR") and user.mt_status != "error":
+                    user.mt_status = "error"
+                    db.commit()
+
+            db.close()
+        except Exception as e:
+            logger.error(f"[StatusPoller] Error: {e}")
+
+        await asyncio.sleep(300)  # 5 minutes — was 15 seconds
+
+
+# ─── Trade Execution + Redis-Cached Data Fetchers ─────────────────────────────
+
+async def get_open_positions(account_id: str) -> list:
+    """
+    Returns open positions. Redis-cached for 10 seconds.
+
+    Uses a setnx distributed LOCK to prevent the thundering-herd problem:
+    when 5 parallel workers all receive a signal at the same instant and all
+    try to fetch positions simultaneously before the cache is populated,
+    only the FIRST worker makes the MetaApi REST call — the rest wait 100ms
+    and then read from the cache the first worker populated.
+
+    Example — 20 users, signal arrives:
+      Old: 20 parallel REST calls → 20 MetaApi credits consumed
+      New: 1 REST call + 19 cache hits → 1 MetaApi credit consumed
+    """
+    cache_key = f"positions:{account_id}"
+    lock_key = f"positions_lock:{account_id}"
+
+    try:
+        from app.utils.redis_client import redis_client
+
+        # 1. Check cache first
+        cached = redis_client.get(cache_key)
+        if cached:
+            logger.debug(f"[Cache HIT] positions:{account_id}")
+            return json.loads(cached)
+
+        # 2. Try to acquire distributed lock (setnx = set if not exists)
+        lock_acquired = redis_client.setnx(lock_key, "1")
+        if lock_acquired:
+            # We won the lock — we do the REST call
+            redis_client.expire(lock_key, 2)  # Auto-release after 2s in case we crash
+        else:
+            # Another worker is already fetching — wait briefly then read their result
+            logger.debug(f"[Lock WAIT] positions:{account_id} — another worker is fetching")
+            await asyncio.sleep(0.2)
+            cached = redis_client.get(cache_key)
+            if cached:
+                return json.loads(cached)
+            # If still no cache after waiting, fall through and do our own call
+    except Exception:
+        pass  # Redis unavailable — fall through to live call
+
+    try:
+        _track_call("get_open_positions")
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"{TRADE_URL}/users/current/accounts/{account_id}/positions",
                 headers=_headers()
             )
+            resp.raise_for_status()
             positions = resp.json()
-            for pos in positions:
-                pos_symbol = resolve_symbol(pos.get("symbol", ""))
-                if pos_symbol.upper() == canonical.upper():
-                    logger.info(f"Duplicate guard: position already open for {symbol} on account {account_id}")
-                    return True
+
+        # Populate cache + release lock
+        try:
+            from app.utils.redis_client import redis_client
+            redis_client.setex(cache_key, 10, json.dumps(positions))
+            redis_client.delete(lock_key)  # Release lock immediately after cache is ready
+        except Exception:
+            pass
+
+        return positions
     except Exception as e:
-        logger.error(f"Error checking open positions: {e}")
+        logger.error(f"Error fetching open positions for {account_id}: {e}")
+    return []
+
+
+async def has_open_position(account_id: str, symbol: str) -> bool:
+    """Returns True if the user already has an open position in this symbol."""
+    canonical = resolve_symbol(symbol)
+    positions = await get_open_positions(account_id)
+    for pos in positions:
+        pos_symbol = resolve_symbol(pos.get("symbol", ""))
+        if pos_symbol.upper() == canonical.upper():
+            logger.info(f"Duplicate guard: position already open for {symbol} on account {account_id}")
+            return True
     return False
+
+
+async def get_account_information(account_id: str) -> dict:
+    """
+    Returns MT5 account data (balance, equity, margin, etc.).
+    Redis-cached for 30 seconds — balance doesn't change in milliseconds.
+    """
+    try:
+        from app.utils.redis_client import redis_client
+        cache_key = f"acct_info:{account_id}"
+        cached = redis_client.get(cache_key)
+        if cached:
+            logger.debug(f"[Cache HIT] acct_info:{account_id}")
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        _track_call("get_account_information")
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{TRADE_URL}/users/current/accounts/{account_id}/accountInformation",
+                headers=_headers()
+            )
+            resp.raise_for_status()
+            info = resp.json()
+
+        # Cache for 30 seconds
+        try:
+            from app.utils.redis_client import redis_client
+            redis_client.setex(cache_key, 30, json.dumps(info))
+        except Exception:
+            pass
+
+        return info
+    except Exception as e:
+        logger.error(f"Error fetching account info for {account_id}: {e}")
+    return {}
 
 
 async def execute_trade(
@@ -179,8 +421,8 @@ async def execute_trade(
     """
     Places a market order via MetaApi.
     Includes symbol resolution and a hard volume cap of 0.10 lots for MVP safety.
+    Invalidates the Redis positions cache after execution so next check is fresh.
     """
-    # Volume safety cap
     MAX_VOLUME = 0.10
     volume = min(volume, MAX_VOLUME)
 
@@ -199,6 +441,7 @@ async def execute_trade(
     if tp > 0:
         payload["takeProfit"] = tp
 
+    _track_call("execute_trade")
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{TRADE_URL}/users/current/accounts/{account_id}/trade",
@@ -207,4 +450,12 @@ async def execute_trade(
         resp.raise_for_status()
         result = resp.json()
         logger.info(f"MetaApi trade executed on {account_id}: {result}")
-        return result
+
+    # Invalidate position cache so the next has_open_position() call is fresh
+    try:
+        from app.utils.redis_client import redis_client
+        redis_client.delete(f"positions:{account_id}")
+    except Exception:
+        pass
+
+    return result

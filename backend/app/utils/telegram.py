@@ -18,7 +18,7 @@ async def send_telegram_message(text: str):
     }
 
     try:
-        async with httpx.AsyncClient(verify=False) as client:
+        async with httpx.AsyncClient() as client:
             resp = await client.post(url, json=payload)
             if resp.status_code != 200:
                 logger.error(f"Failed to send Telegram message: {resp.text}")

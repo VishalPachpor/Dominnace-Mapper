@@ -14,3 +14,6 @@ alembic
 httpx
 celery
 cryptography
+prometheus-client==0.20.0
+sentry-sdk[fastapi]
+PyJWT[crypto]

@@ -12,7 +12,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - api
-    restart: always
+    restart: unless-stopped
 
   # ──────────────────────────────────────────────
   # FastAPI API Server (scalable)
@@ -21,15 +21,15 @@ services:
   api:
     build: .
     command: >
-      bash -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+      bash -c "alembic upgrade heads && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
     env_file:
       - .env.production
     depends_on:
       - db
       - redis
-    restart: always
+    restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -46,7 +46,7 @@ services:
     depends_on:
       - db
       - redis
-    restart: always
+    restart: unless-stopped
 
   # ──────────────────────────────────────────────
   # WebSocket Market Data Service
@@ -58,7 +58,7 @@ services:
       - .env.production
     depends_on:
       - redis
-    restart: always
+    restart: unless-stopped
 
   # ──────────────────────────────────────────────
   # PostgreSQL Database
@@ -73,7 +73,7 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
-    restart: always
+    restart: unless-stopped
 
   # ──────────────────────────────────────────────
   # Redis Queue
@@ -85,8 +85,67 @@ services:
       - redisdata:/data
     ports:
       - "6379:6379"
-    restart: always
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────
+  # Observability Layer (Phase 5)
+  # ──────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.1.5
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.6.1
+    container_name: node-exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.2
+    container_name: cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
 
 volumes:
   pgdata:
   redisdata:
+  prometheusdata:
+  grafanadata:

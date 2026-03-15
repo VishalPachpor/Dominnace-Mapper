@@ -51,7 +51,7 @@ def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(
             acct = user.meta_account_id
             headers = {"auth-token": META_API_TOKEN}
 
-            with httpx.Client(verify=False, timeout=10.0) as client:
+            with httpx.Client(timeout=10.0) as client:
                 info_resp = client.get(f"{base}/users/current/accounts/{acct}/account-information", headers=headers)
                 if info_resp.status_code == 200:
                     info_data = info_resp.json()
@@ -69,9 +69,10 @@ def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(
     # Fallback to Binance if MetaApi not configured
     if not balance_fetched and user.exchange_api_key and user.exchange_secret_key:
         try:
+            from app.utils.crypto_util import decrypt_password
             exchange = ccxt.binance({
-                'apiKey': user.exchange_api_key,
-                'secret': user.exchange_secret_key,
+                'apiKey': decrypt_password(user.exchange_api_key),
+                'secret': decrypt_password(user.exchange_secret_key),
                 'enableRateLimit': True,
                 'options': {'defaultType': 'future'}
             })

@@ -34,7 +34,7 @@ class ForexEngine:
 
         logger.info(f"ForexEngine: Sending trade to MT5 for {symbol} ({side})")
         
-        async with httpx.AsyncClient(verify=False) as client:
+        async with httpx.AsyncClient() as client:
             resp = await client.post(url, json=payload, headers=headers)
 
         data = resp.json()

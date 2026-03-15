@@ -1,43 +1,102 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+
+const navItems = [
+    { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
+    { href: "/positions", label: "Positions", icon: "bar_chart" },
+    { href: "/trades", label: "History", icon: "history" },
+    { href: "/settings", label: "Accounts", icon: "manage_accounts" },
+    { href: "/billing", label: "Billing", icon: "payments" },
+    { href: "/admin", label: "Admin", icon: "admin_panel_settings" },
+];
+
+const bottomItems = [
+    { href: "/strategy", label: "Strategy", icon: "smart_toy" },
+    { href: "/profile", label: "Profile", icon: "person" },
+];
 
 export default function Sidebar({ onClose }: { onClose?: () => void }) {
     const pathname = usePathname();
+    const router = useRouter();
 
     const isActive = (path: string) => pathname === path;
 
     const linkClass = (path: string) =>
-        `p-3 rounded-xl transition-colors font-medium ${isActive(path) ? 'bg-blue-600 shadow-lg shadow-blue-900/20 text-white' : 'hover:bg-slate-800 text-slate-400 hover:text-white'}`;
+        `flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors group ${
+            isActive(path)
+                ? "bg-surface-container-highest text-primary"
+                : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
+        }`;
+
+    const handleLogout = () => {
+        if (typeof window !== "undefined") {
+            localStorage.removeItem("token");
+        }
+        if (onClose) onClose();
+        router.push("/login");
+    };
 
     return (
-        <div className="w-64 h-full bg-slate-900 border-r border-slate-800 text-white flex flex-col p-4 shadow-2xl md:shadow-none">
-            <nav className="flex flex-col gap-2 flex-grow mt-2">
-                <span className="text-xs uppercase font-bold text-slate-500 tracking-wider mb-2 px-3">Menu</span>
-                <Link href="/dashboard" className={linkClass("/dashboard")} onClick={onClose}>
-                    Dashboard
-                </Link>
-                <Link href="/positions" className={linkClass("/positions")} onClick={onClose}>
-                    Positions
-                </Link>
-                <Link href="/trades" className={linkClass("/trades")} onClick={onClose}>
-                    Trade History
-                </Link>
+        <div className="w-64 h-full bg-surface-container-low flex flex-col border-r border-outline-variant/15 shadow-2xl md:shadow-none">
+            {/* Logo */}
+            <div className="p-6">
+                <h1 className="text-on-surface font-bold tracking-tight text-xl">
+                    DominanceBot
+                </h1>
+                <p className="text-on-surface-variant text-[10px] uppercase tracking-widest font-medium">
+                    Trading Platform
+                </p>
+            </div>
 
-                <div className="mt-8"></div>
-                <span className="text-xs uppercase font-bold text-slate-500 tracking-wider mb-2 px-3">Account</span>
-                <Link href="/settings" className={linkClass("/settings")} onClick={onClose}>
-                    API Settings
-                </Link>
-                <Link href="/billing" className={linkClass("/billing")} onClick={onClose}>
-                    Billing & Plans
-                </Link>
+            {/* Nav */}
+            <nav className="flex-1 px-3 space-y-1">
+                {navItems.map((item) => (
+                    <Link
+                        key={item.href}
+                        href={item.href}
+                        className={linkClass(item.href)}
+                        onClick={onClose}
+                    >
+                        <span
+                            className="material-symbols-outlined text-[20px]"
+                            style={
+                                isActive(item.href)
+                                    ? { fontVariationSettings: "'FILL' 1" }
+                                    : undefined
+                            }
+                        >
+                            {item.icon}
+                        </span>
+                        <span className="text-sm font-medium">{item.label}</span>
+                    </Link>
+                ))}
             </nav>
 
-            <div className="mt-auto border-t border-slate-800 pt-4">
-                <button className="w-full text-left p-3 text-slate-400 hover:text-red-400 hover:bg-slate-800/50 rounded-xl transition-colors font-medium">
-                    Logout
+            {/* Bottom Section */}
+            <div className="p-3 border-t border-outline-variant/15 space-y-1">
+                {bottomItems.map((item) => (
+                    <Link
+                        key={item.href}
+                        href={item.href}
+                        className={linkClass(item.href)}
+                        onClick={onClose}
+                    >
+                        <span className="material-symbols-outlined text-[20px]">
+                            {item.icon}
+                        </span>
+                        <span className="text-sm font-medium">{item.label}</span>
+                    </Link>
+                ))}
+                <button
+                    className="flex items-center gap-3 px-3 py-2.5 text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors rounded-md group w-full text-left"
+                    onClick={handleLogout}
+                >
+                    <span className="material-symbols-outlined text-[20px]">
+                        logout
+                    </span>
+                    <span className="text-sm font-medium">Logout</span>
                 </button>
             </div>
         </div>

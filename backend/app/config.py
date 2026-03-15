@@ -25,3 +25,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 # ─── Telegram ───
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# ─── OAuth ───
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+APPLE_CLIENT_ID = os.getenv("APPLE_CLIENT_ID")  # Your Services ID (e.g. com.dominancebot.auth)

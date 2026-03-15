@@ -1,0 +1,104 @@
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 670, in app
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    raw_response = await run_endpoint_function(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/fastapi/routing.py", line 326, in run_endpoint_function
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return await run_in_threadpool(dependant.call, **values)
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/starlette/concurrency.py", line 32, in run_in_threadpool
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return await anyio.to_thread.run_sync(func)
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/anyio/to_thread.py", line 63, in run_sync
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return await get_async_backend().run_sync_in_worker_thread(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 2502, in run_sync_in_worker_thread
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return await future
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/anyio/_backends/_asyncio.py", line 986, in run
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    result = context.run(func, *args)
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]             ^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/app/app/routes/auth.py", line 23, in register
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    existing = db.query(User).filter(User.email == data.email).first()
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/orm/query.py", line 2759, in first
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return self.limit(1)._iter().first()  # type: ignore
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/orm/query.py", line 2857, in _iter
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                                                  ^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return self._execute_internal(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/orm/session.py", line 2249, in _execute_internal
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    result: Result[Any] = compile_state_cls.orm_execute_statement(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/orm/context.py", line 306, in orm_execute_statement
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    result = conn.execute(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]             ^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return meth(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/sql/elements.py", line 527, in _execute_on_connection
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return connection._execute_clauseelement(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    ret = self._execute_context(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]          ^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    return self._exec_single_context(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    self._handle_dbapi_exception(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 2363, in _handle_dbapi_exception
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    self.dialect.do_execute(
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]  File "/usr/local/lib/python3.11/site-packages/sqlalchemy/engine/default.py", line 952, in do_execute
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]    cursor.execute(statement, parameters)
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedColumn) column users.trading_paused does not exist
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]LINE 1: ...rs_mt_status, users.is_active AS users_is_active, users.trad...
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                                                             ^
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m][SQL: SELECT users.id AS users_id, users.email AS users_email, users.password_hash AS users_password_hash, users.exchange_api_key AS users_exchange_api_key, users.exchange_secret_key AS users_exchange_secret_key, users.ea_token AS users_ea_token, users.ea_last_seen AS users_ea_last_seen, users.mt5_balance AS users_mt5_balance, users.mt5_equity AS users_mt5_equity, users.mt_login AS users_mt_login, users.mt_password_enc AS users_mt_password_enc, users.mt_server AS users_mt_server, users.mt_broker AS users_mt_broker, users.meta_account_id AS users_meta_account_id, users.mt_status AS users_mt_status, users.is_active AS users_is_active, users.trading_paused AS users_trading_paused
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]FROM users
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]WHERE users.email = %(email_1)s
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m] LIMIT %(param_1)s]
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m][parameters: {'email_1': 'test_final_2@test.com', 'param_1': 1}]
+[2m2026-03-14T11:58:04Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m](Background on this error at: https://sqlalche.me/e/20/f405)
+[2m2026-03-14T11:58:10Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]Status Poller Error: (psycopg2.errors.UndefinedColumn) column users.trading_paused does not exist
+[2m2026-03-14T11:58:10Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]LINE 1: ...rs_mt_status, users.is_active AS users_is_active, users.trad...
+[2m2026-03-14T11:58:10Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                                                             ^
+[2m2026-03-14T11:58:10Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m][SQL: SELECT users.id AS users_id, users.email AS users_email, users.password_hash AS users_password_hash, users.exchange_api_key AS users_exchange_api_key, users.exchange_secret_key AS users_exchange_secret_key, users.ea_token AS users_ea_token, users.ea_last_seen AS users_ea_last_seen, users.mt5_balance AS users_mt5_balance, users.mt5_equity AS users_mt5_equity, users.mt_login AS users_mt_login, users.mt_password_enc AS users_mt_password_enc, users.mt_server AS users_mt_server, users.mt_broker AS users_mt_broker, users.meta_account_id AS users_meta_account_id, users.mt_status AS users_mt_status, users.is_active AS users_is_active, users.trading_paused AS users_trading_paused
+[2m2026-03-14T11:58:10Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]FROM users
+[2m2026-03-14T11:58:10Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]WHERE users.is_active = true AND users.meta_account_id IS NOT NULL]
+[2m2026-03-14T11:58:10Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m](Background on this error at: https://sqlalche.me/e/20/f405)
+[2m2026-03-14T11:58:25Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]Status Poller Error: (psycopg2.errors.UndefinedColumn) column users.trading_paused does not exist
+[2m2026-03-14T11:58:25Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]LINE 1: ...rs_mt_status, users.is_active AS users_is_active, users.trad...
+[2m2026-03-14T11:58:25Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                                                             ^
+[2m2026-03-14T11:58:25Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m][SQL: SELECT users.id AS users_id, users.email AS users_email, users.password_hash AS users_password_hash, users.exchange_api_key AS users_exchange_api_key, users.exchange_secret_key AS users_exchange_secret_key, users.ea_token AS users_ea_token, users.ea_last_seen AS users_ea_last_seen, users.mt5_balance AS users_mt5_balance, users.mt5_equity AS users_mt5_equity, users.mt_login AS users_mt_login, users.mt_password_enc AS users_mt_password_enc, users.mt_server AS users_mt_server, users.mt_broker AS users_mt_broker, users.meta_account_id AS users_meta_account_id, users.mt_status AS users_mt_status, users.is_active AS users_is_active, users.trading_paused AS users_trading_paused
+[2m2026-03-14T11:58:25Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]FROM users
+[2m2026-03-14T11:58:25Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]WHERE users.is_active = true AND users.meta_account_id IS NOT NULL]
+[2m2026-03-14T11:58:25Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m](Background on this error at: https://sqlalche.me/e/20/f405)
+[2m2026-03-14T11:58:41Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]Status Poller Error: (psycopg2.errors.UndefinedColumn) column users.trading_paused does not exist
+[2m2026-03-14T11:58:41Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]LINE 1: ...rs_mt_status, users.is_active AS users_is_active, users.trad...
+[2m2026-03-14T11:58:41Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                                                             ^
+[2m2026-03-14T11:58:41Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m][SQL: SELECT users.id AS users_id, users.email AS users_email, users.password_hash AS users_password_hash, users.exchange_api_key AS users_exchange_api_key, users.exchange_secret_key AS users_exchange_secret_key, users.ea_token AS users_ea_token, users.ea_last_seen AS users_ea_last_seen, users.mt5_balance AS users_mt5_balance, users.mt5_equity AS users_mt5_equity, users.mt_login AS users_mt_login, users.mt_password_enc AS users_mt_password_enc, users.mt_server AS users_mt_server, users.mt_broker AS users_mt_broker, users.meta_account_id AS users_meta_account_id, users.mt_status AS users_mt_status, users.is_active AS users_is_active, users.trading_paused AS users_trading_paused
+[2m2026-03-14T11:58:41Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]FROM users
+[2m2026-03-14T11:58:41Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]WHERE users.is_active = true AND users.meta_account_id IS NOT NULL]
+[2m2026-03-14T11:58:41Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m](Background on this error at: https://sqlalche.me/e/20/f405)
+[2m2026-03-14T11:58:56Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]Status Poller Error: (psycopg2.errors.UndefinedColumn) column users.trading_paused does not exist
+[2m2026-03-14T11:58:56Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]LINE 1: ...rs_mt_status, users.is_active AS users_is_active, users.trad...
+[2m2026-03-14T11:58:56Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                                                             ^
+[2m2026-03-14T11:58:56Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m][SQL: SELECT users.id AS users_id, users.email AS users_email, users.password_hash AS users_password_hash, users.exchange_api_key AS users_exchange_api_key, users.exchange_secret_key AS users_exchange_secret_key, users.ea_token AS users_ea_token, users.ea_last_seen AS users_ea_last_seen, users.mt5_balance AS users_mt5_balance, users.mt5_equity AS users_mt5_equity, users.mt_login AS users_mt_login, users.mt_password_enc AS users_mt_password_enc, users.mt_server AS users_mt_server, users.mt_broker AS users_mt_broker, users.meta_account_id AS users_meta_account_id, users.mt_status AS users_mt_status, users.is_active AS users_is_active, users.trading_paused AS users_trading_paused
+[2m2026-03-14T11:58:56Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]FROM users
+[2m2026-03-14T11:58:56Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]WHERE users.is_active = true AND users.meta_account_id IS NOT NULL]
+[2m2026-03-14T11:58:56Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m](Background on this error at: https://sqlalche.me/e/20/f405)
+[2m2026-03-14T11:59:13Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]Status Poller Error: (psycopg2.errors.UndefinedColumn) column users.trading_paused does not exist
+[2m2026-03-14T11:59:13Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]LINE 1: ...rs_mt_status, users.is_active AS users_is_active, users.trad...
+[2m2026-03-14T11:59:13Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]                                                             ^
+[2m2026-03-14T11:59:13Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m][SQL: SELECT users.id AS users_id, users.email AS users_email, users.password_hash AS users_password_hash, users.exchange_api_key AS users_exchange_api_key, users.exchange_secret_key AS users_exchange_secret_key, users.ea_token AS users_ea_token, users.ea_last_seen AS users_ea_last_seen, users.mt5_balance AS users_mt5_balance, users.mt5_equity AS users_mt5_equity, users.mt_login AS users_mt_login, users.mt_password_enc AS users_mt_password_enc, users.mt_server AS users_mt_server, users.mt_broker AS users_mt_broker, users.meta_account_id AS users_meta_account_id, users.mt_status AS users_mt_status, users.is_active AS users_is_active, users.trading_paused AS users_trading_paused
+[2m2026-03-14T11:59:13Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]FROM users
+[2m2026-03-14T11:59:13Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]WHERE users.is_active = true AND users.meta_account_id IS NOT NULL]
+[2m2026-03-14T11:59:13Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m](Background on this error at: https://sqlalche.me/e/20/f405)
+[2m2026-03-14T11:59:30Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]Status Poller Error: (psycopg2.OperationalError) connection to server at "lingering-moon-9343-db.flycast" (fdaa:4d:d5a6:0:1::2), port 5432 failed: server closed the connection unexpectedly
+[2m2026-03-14T11:59:30Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]	This probably means the server terminated abnormally
+[2m2026-03-14T11:59:30Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m]	before or while processing the request.
+[2m2026-03-14T11:59:30Z[0m app[84976df2202278] [32msjc[0m [[34minfo[0m](Background on this error at: https://sqlalche.me/e/20/e3q8)

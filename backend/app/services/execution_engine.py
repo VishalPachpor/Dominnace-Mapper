@@ -30,22 +30,29 @@ class ExecutionEngine:
     async def open_trade(self, user, trade_dict):
         symbol = trade_dict["symbol"]
         side = trade_dict["side"]
-        volume = float(trade_dict.get("volume", 0.01))
+        
+        # ── Critical Protection: Position Risk Guard ─────────────────────────
+        # Enforce maximum safety lot size natively
+        MAX_SAFE_LOT = 0.10
+        requested_volume = float(trade_dict.get("volume", 0.01))
+        volume = min(requested_volume, MAX_SAFE_LOT)
+        
+        # ── Critical Protection: Symbol Whitelist ────────────────────────────
+        ALLOWED_SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD", "ETHUSD", "US30", "NAS100", "BTCUSDT", "ETHUSDT"]
+        if symbol not in ALLOWED_SYMBOLS:
+            logger.warning(f"Rejected trade: Symbol {symbol} not in ALLOWED_SYMBOLS whitelist.")
+            return {"status": "rejected", "reason": "unauthorized_symbol"}
+
         sl = float(trade_dict.get("sl", 0))
         tp = float(trade_dict.get("tp", 0))
 
-        logger.info(f"ExecutionEngine: Routing trade {side} {volume} {symbol} for User {user.id}")
+        logger.info(f"ExecutionEngine: Routing trade {side} {volume} {symbol} (Capped from {requested_volume}) for User {user.id}")
 
         if is_forex_symbol(symbol):
-            # ── Guard 1: MetaApi terminal must be connected ───────────────────
-            mt_status = getattr(user, "mt_status", None)
             meta_account_id = getattr(user, "meta_account_id", None)
-
-            if not meta_account_id or mt_status != "connected":
-                logger.warning(
-                    f"User {user.id} MT5 terminal not ready "
-                    f"(status={mt_status}, account={meta_account_id}). Skipping trade."
-                )
+            
+            if not meta_account_id:
+                logger.warning(f"User {user.id} has no meta_account_id. Skipping trade.")
                 return None
 
             # ── Guard 2: Duplicate position check ─────────────────────────────

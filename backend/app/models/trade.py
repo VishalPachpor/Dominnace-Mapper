@@ -9,6 +9,7 @@ class Trade(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     user_id = Column(String, nullable=True)
+    bot_id = Column(String, nullable=True)
     symbol = Column(String)
     side = Column(String)
 

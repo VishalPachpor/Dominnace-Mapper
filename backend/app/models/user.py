@@ -8,7 +8,13 @@ class User(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     email = Column(String, unique=True, nullable=False)
-    password_hash = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)  # Nullable for OAuth-only users
+
+    # OAuth
+    oauth_provider = Column(String(20), nullable=True)   # "google" | "apple" | None
+    oauth_sub = Column(String(255), unique=True, nullable=True)  # Provider subject ID
+    full_name = Column(String(200), nullable=True)
+    avatar_url = Column(String(500), nullable=True)
     
     # Binance / CCXT
     exchange_api_key = Column(String, nullable=True)
@@ -30,3 +36,5 @@ class User(Base):
     mt_status = Column(String(30), default="disconnected")
 
     is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)
+    trading_paused = Column(Boolean, default=False)

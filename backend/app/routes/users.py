@@ -9,14 +9,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _safe_last4(encrypted_val: str | None) -> str | None:
+    """Decrypt an encrypted API key and return only the last 4 chars for display."""
+    if not encrypted_val:
+        return None
+    try:
+        from app.utils.crypto_util import decrypt_password
+        plain = decrypt_password(encrypted_val)
+        return plain[-4:] if len(plain) >= 4 else plain
+    except Exception:
+        return "****"
+
+
 class AddApiKeyRequest(BaseModel):
     api_key: str
     secret_key: str
 
 @router.post("/add-api-key")
 def save_api_keys(data: AddApiKeyRequest, user=Depends(get_current_user), db: Session = Depends(get_db)):
-    user.exchange_api_key = data.api_key
-    user.exchange_secret_key = data.secret_key
+    from app.utils.crypto_util import encrypt_password
+    user.exchange_api_key = encrypt_password(data.api_key)
+    user.exchange_secret_key = encrypt_password(data.secret_key)
     db.commit()
     return {"message": "API keys saved successfully"}
 
@@ -33,6 +46,64 @@ def get_ea_token(user=Depends(get_current_user)):
         "ea_token": user.ea_token,
         "ea_last_seen": user.ea_last_seen
     }
+
+@router.get("/me")
+def get_user_profile(user=Depends(get_current_user)):
+    """Return the user's profile information, API keys, and notification settings."""
+    return {
+        "email": user.email,
+        "full_name": user.full_name or "",
+        "avatar_url": user.avatar_url or "",
+        "oauth_provider": user.oauth_provider,
+        "bio": "",  # TODO: add bio column to users table
+        "telegram_alerts": True,
+        "push_notifications": False,
+        # API Keys Status
+        "has_binance_key": bool(user.exchange_api_key),
+        "binance_api_key_last4": _safe_last4(user.exchange_api_key),
+        "has_mt5_key": bool(user.meta_account_id),
+        "mt_login": user.mt_login,
+        "mt_server": user.mt_server,
+        "mt_status": user.mt_status,
+        "ea_token_active": bool(user.ea_token)
+    }
+
+class UpdateProfileRequest(BaseModel):
+    full_name: str | None = None
+    avatar_url: str | None = None
+    bio: str | None = None
+    telegram_alerts: bool | None = None
+    push_notifications: bool | None = None
+
+@router.put("/me")
+def update_user_profile(data: UpdateProfileRequest, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Save editable profile fields."""
+    if data.full_name is not None:
+        user.full_name = data.full_name
+    if data.avatar_url is not None:
+        user.avatar_url = data.avatar_url
+    db.commit()
+    return {"message": "Profile updated successfully"}
+
+@router.delete("/api-key/binance")
+def delete_binance_key(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Revoke Binance API keys."""
+    user.exchange_api_key = None
+    user.exchange_secret_key = None
+    db.commit()
+    return {"message": "Binance API keys revoked"}
+
+@router.delete("/api-key/mt5")
+def delete_mt5_key(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Revoke MT5 Connection."""
+    user.mt_login = None
+    user.mt_password_enc = None
+    user.mt_server = None
+    user.mt_broker = None
+    user.meta_account_id = None
+    user.mt_status = "disconnected"
+    db.commit()
+    return {"message": "MT5 connection revoked"}
 
 @router.get("/")
 def get_users():
