@@ -1,7 +1,9 @@
 import json
 import hashlib
+import logging
 from sqlalchemy.orm import Session
-from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 from app.models.bot import Bot, UserBot
 from app.utils.redis_client import redis_client
@@ -38,16 +40,35 @@ def route_signal(data: dict, db: Session):
     # Mark signal as processed (expiry 60 seconds)
     redis_client.setex(f"signal_processed:{signal_hash}", 60, "1")
 
-    if bot_slug == "UNKNOWN":
-        # Fallback or strict error. Let's assume strict.
+    # ── Bot Lookup: first try explicit "bot" slug, then fall back to "signal_type" ──
+    # If your TradingView alert doesn't send a "bot" field, add one to the alert message:
+    #   "bot": "dm-bull"   <-- must match a Bot.slug in your database
+    # As a fallback, we also try matching by signal_type field.
+    bot_slug = data.get("bot")
+    signal_type = str(data.get("signal_type", "")).lower()
+
+    if bot_slug:
+        bot = db.query(Bot).filter(Bot.slug == bot_slug, Bot.is_active == True).first()
+        if not bot:
+            logger.warning(f"[Router] No active bot found for slug '{bot_slug}'")
+            signals_dropped_total.labels(reason="inactive_bot").inc()
+            return 0
+    elif signal_type:
+        # Fallback: match bot by signal_type (e.g. "dom" → bot with slug "dm-bull")
+        # Tries exact match first, then partial match
+        bot = (
+            db.query(Bot).filter(Bot.slug == signal_type, Bot.is_active == True).first()
+            or db.query(Bot).filter(Bot.slug.contains(signal_type), Bot.is_active == True).first()
+        )
+        if not bot:
+            logger.warning(f"[Router] No active bot found for signal_type '{signal_type}'. "
+                           f"Add '\"bot\": \"<your-bot-slug>\"' to your TradingView alert message.")
+            signals_dropped_total.labels(reason="inactive_bot").inc()
+            return 0
+        logger.info(f"[Router] Matched bot '{bot.slug}' via signal_type '{signal_type}'")
+    else:
+        logger.warning("[Router] Signal has neither 'bot' nor 'signal_type' field — cannot route.")
         signals_dropped_total.labels(reason="missing_bot_slug").inc()
-        raise HTTPException(status_code=400, detail="Missing 'bot' identifier in signal payload")
-    
-    bot = db.query(Bot).filter(Bot.slug == bot_slug, Bot.is_active == True).first()
-    if not bot:
-        # Ignore unrecognised inactive bots
-        print(f"[Router] Ignored signal for inactive or unknown bot: {bot_slug}")
-        signals_dropped_total.labels(reason="inactive_bot").inc()
         return 0
 
     # Get active subscribers for this bot whose trading is not paused AND who are actually connected
