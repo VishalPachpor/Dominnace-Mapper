@@ -3,6 +3,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes import auth, webhook, users, trades, bots, billing, admin, positions, ea_bridge
 from app.config import FRONTEND_URL
+import logging
+
+# Configure logging for the application
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+logger.info("DominanceBot API Starting up...")
 
 app = FastAPI(
     title="DominanceBot API",
