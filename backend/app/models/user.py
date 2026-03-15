@@ -10,7 +10,7 @@ class User(Base):
     email = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=True)  # Nullable for OAuth-only users
 
-    # OAuth
+    # OAuth (Google / Apple Sign In)
     oauth_provider = Column(String(20), nullable=True)   # "google" | "apple" | None
     oauth_sub = Column(String(255), unique=True, nullable=True)  # Provider subject ID
     full_name = Column(String(200), nullable=True)
