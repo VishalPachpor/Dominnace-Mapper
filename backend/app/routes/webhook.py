@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _fanout_signal(data: dict):
+async def _fanout_signal(data: dict):
     """
     Runs in a background thread after we've already returned 200 to TradingView.
     Opens a DB session, calls signal_router to fan-out the signal to subscribed users,
@@ -28,7 +28,7 @@ def _fanout_signal(data: dict):
     """
     db: Session = SessionLocal()
     try:
-        routed_count = route_signal(data, db)
+        routed_count = await route_signal(data, db)
         logger.info(f"[Webhook] Signal fanned out to {routed_count} users: "
                     f"symbol={data.get('symbol')} action={data.get('action')}")
     except Exception as e:
