@@ -18,12 +18,15 @@ router = APIRouter()
 @router.get("")
 async def get_trades(user = Depends(get_current_user), db: Session = Depends(get_db)):
     """
-    Returns closed trades from DB + live open positions from MetaApi.
-    Open positions are marked with result='OPEN' so the frontend can distinguish them.
+    Returns all trades for the user:
+    1. Closed trades from the 'trades' table (legacy EA Bridge trades)
+    2. Bot-executed positions from the 'positions' table (signal_router / trade_manager trades)
+    3. Live open positions from MetaApi
     """
-    # 1. Closed trades from DB
-    closed_trades = db.query(Trade).filter(Trade.user_id == user.id).order_by(Trade.created_at.desc()).all()
     result_list = []
+
+    # 1. Legacy closed trades from 'trades' table
+    closed_trades = db.query(Trade).filter(Trade.user_id == user.id).order_by(Trade.created_at.desc()).all()
     for t in closed_trades:
         result_list.append({
             "id": t.id,
@@ -38,17 +41,43 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
             "status": "closed",
         })
 
-    # 2. Live open positions from MetaApi
+    # 2. Bot-executed positions from the 'positions' table (what trade_manager writes)
+    bot_positions = db.query(Position).filter(
+        Position.user_id == user.id
+    ).order_by(Position.created_at.desc()).all()
+
+    for p in bot_positions:
+        result_list.append({
+            "id": p.id,
+            "symbol": p.symbol,
+            "side": p.side,
+            "entry_price": p.entry,
+            "exit_price": None,
+            "sl": p.sl,
+            "tp": p.tp,
+            "pnl": None,
+            "result": p.status or "OPEN",
+            "volume": 0.01,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "status": p.status.lower() if p.status else "open",
+        })
+
+    # 3. Live open positions from MetaApi (real-time data with unrealized PnL)
     meta_account_id = getattr(user, "meta_account_id", None)
     if meta_account_id:
         try:
             from app.services.metaapi_service import get_open_positions
             positions = await get_open_positions(meta_account_id)
+            # Only add live positions whose IDs aren't already in our list (to avoid duplicates)
+            existing_ids = {r["id"] for r in result_list}
             for p in positions:
+                pos_id = str(p.get("id", ""))
+                if pos_id in existing_ids:
+                    continue
                 side_raw = p.get("type", "")
                 side = "buy" if "BUY" in side_raw.upper() else "sell"
                 result_list.append({
-                    "id": p.get("id", ""),
+                    "id": pos_id,
                     "symbol": p.get("symbol", ""),
                     "side": side,
                     "entry_price": p.get("openPrice", 0),
@@ -64,6 +93,7 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
             logger.error(f"Failed to fetch live positions for trades list: {e}")
 
     return result_list
+
 
 @router.get("/dashboard")
 async def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(get_db)):

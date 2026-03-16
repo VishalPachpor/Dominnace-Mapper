@@ -128,7 +128,7 @@ class TradeManager:
                         tracker = PositionTracker()
                         
                         trade_data = {
-                            "id": response.get("positionId") or response.get("orderId") or "mock_id",
+                            "id": response.get("positionId") or response.get("orderId") or str(__import__("uuid").uuid4()),
                             "user_id": user.id,
                             "bot_id": bot_id, # Track bot attribution
                             "symbol": trade["symbol"],
