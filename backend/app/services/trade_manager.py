@@ -180,8 +180,20 @@ class TradeManager:
         finally:
             db.close()
 
-    def create_trade(self, symbol, action, price, dom_length):
-        
+    def create_trade(self, symbol, action, price, dom_length, dom_high=None, dom_low=None):
+        """
+        Build a trade dict using the correct DOM SL/TP model.
+
+        BUY:
+            SL = dom_low                        (price must close below the DOM zone to invalidate)
+            TP = dom_high + dom_length          (project equal distance above the zone)
+            BE = entry + (dom_length * 0.35)    (move SL to breakeven at 35% of target)
+
+        SELL:
+            SL = dom_high
+            TP = dom_low - dom_length
+            BE = entry - (dom_length * 0.35)
+        """
         # Remove exchange prefix if present (e.g., BINANCE:BTCUSDT -> BTCUSDT)
         if ":" in symbol:
             symbol = symbol.split(":")[-1]
@@ -191,7 +203,22 @@ class TradeManager:
             symbol = symbol[:-1]
 
         entry = price
-        if dom_length > 0:
+
+        if dom_high is not None and dom_low is not None and dom_high > dom_low:
+            # ── CORRECT DOM RULE ──────────────────────────────────────────────
+            dom_length = dom_high - dom_low
+            if action == "buy":
+                sl = dom_low                          # SL at bottom of DOM zone
+                tp = dom_high + dom_length            # TP = zone top + full zone range
+                be_trigger = entry + (dom_length * 0.35)
+            else:  # sell
+                sl = dom_high                         # SL at top of DOM zone
+                tp = dom_low - dom_length             # TP = zone bottom - full zone range
+                be_trigger = entry - (dom_length * 0.35)
+
+        elif dom_length > 0:
+            # ── Fallback: old signals without explicit dom_high/dom_low ──────
+            # Keep previous behaviour so old webhook format still works
             if action == "buy":
                 sl = price - dom_length
                 tp = price + dom_length
@@ -207,7 +234,7 @@ class TradeManager:
             "symbol": symbol,
             "side": action,
             "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "be_trigger": be_trigger
+            "sl": round(sl, 5) if sl else 0,
+            "tp": round(tp, 5) if tp else 0,
+            "be_trigger": round(be_trigger, 5) if be_trigger else 0,
         }

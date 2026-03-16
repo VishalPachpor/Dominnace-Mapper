@@ -43,7 +43,8 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
 
     # 2. Bot-executed positions from the 'positions' table (what trade_manager writes)
     bot_positions = db.query(Position).filter(
-        Position.user_id == user.id
+        Position.user_id == user.id,
+        Position.status.in_(["success", "OPEN", "CLOSED", "TP_HIT", "STOPPED"])
     ).order_by(Position.created_at.desc()).all()
 
     for p in bot_positions:
@@ -98,10 +99,10 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
 @router.get("/dashboard")
 async def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(get_db)):
 
-    # 1. Fetch Real Balance AND Live Positions
     current_equity = 10000.0
     active_trades = 0
     unrealized_pnl = 0.0
+    daily_pnl = 0.0
     balance_fetched = False
 
     # A. Check EA Bridge MT5 Balance
@@ -167,9 +168,15 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
         try:
             from app.services.metaapi_service import get_deal_history, get_open_positions as get_pos
             from datetime import datetime
+            
+            today_str = datetime.utcnow().strftime("%Y-%m-%d")
 
             deals = await get_deal_history(meta_account_id)
             live_positions = await get_pos(meta_account_id)
+            
+            # Calculate REAL Daily PnL directly from MetaApi closed deals today
+            today_deals = [d for d in deals if d.get("time", "").startswith(today_str) and float(d.get("profit", 0)) != 0]
+            daily_pnl = sum(float(d.get("profit", 0)) + float(d.get("swap", 0)) + float(d.get("commission", 0)) for d in today_deals)
 
             # Build a map of position profit by open time for live positions
             pos_profit_map = {}
@@ -246,6 +253,7 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
         "win_rate": round(cast(float, win_rate), 2),
         "total_pnl": total_pnl,
         "unrealized_pnl": round(unrealized_float, 2),
+        "daily_pnl": round(daily_pnl, 2),
         "equity_curve": equity_data[-30:]
     }
 
