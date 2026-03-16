@@ -18,7 +18,7 @@ class TradeMonitorService:
         db = SessionLocal()
         try:
             active_states = db.query(TradeState).filter(
-                TradeState.status.in_(["OPEN", "BREAKEVEN"])
+                TradeState.status.in_(["OPEN", "BE_MOVED"])
             ).all()
 
             for state in active_states:
@@ -62,7 +62,7 @@ class TradeMonitorService:
                     logger.info(f"BE Triggered for {state.id} ({state.symbol}). Moving SL to {state.entry_price}")
                     success = await self.engine.update_position_sl(user, matching_pos["id"], state.entry_price)
                     if success:
-                        state.status = "BREAKEVEN"
+                        state.status = "BE_MOVED"
                         state.sl_price = state.entry_price
                         db.commit()
 
@@ -106,6 +106,19 @@ class TradeMonitorService:
         db.commit()
 
     async def _trigger_reversal(self, db, state: TradeState, user: User):
+        # Double check reversal_used again (Safety Guard 1)
+        if state.reversal_used:
+            logger.warning(f"Reversal already used for {state.id}. Skipping.")
+            return
+
+        # Safety Guard 2: Symbol stacking check
+        # Ensure no existing open position for this symbol before firing reversal
+        # (MetaApi sync delay protection)
+        from app.services.metaapi_service import has_open_position
+        if await has_open_position(user.meta_account_id, state.symbol):
+            logger.warning(f"Symbol stacking guard: {state.symbol} still has an open position. Delaying reversal.")
+            return
+
         logger.info(f"🔄 Triggering REVERSAL for {state.user_id} on {state.symbol}")
         
         reverse_side = "sell" if state.side == "buy" else "buy"

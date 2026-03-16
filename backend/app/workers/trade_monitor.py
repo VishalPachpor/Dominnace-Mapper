@@ -26,7 +26,7 @@ async def start_monitor():
         try:
             if not is_trading_enabled():
                 logger.warning("Kill switch active — Monitor skipping cycle.")
-                await asyncio.sleep(60)
+                await asyncio.sleep(10)
                 continue
             
             start_time = time.time()
@@ -35,8 +35,8 @@ async def start_monitor():
             
             logger.info(f"Monitor cycle completed in {elapsed:.2f}s")
             
-            # Wait for the remainder of the 60s cycle
-            sleep_time = max(5, 60 - elapsed)
+            # Wait for the remainder of the 10s cycle
+            sleep_time = max(2, 10 - elapsed)
             await asyncio.sleep(sleep_time)
             
         except Exception as e:
