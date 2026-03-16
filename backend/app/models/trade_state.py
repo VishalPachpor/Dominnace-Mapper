@@ -15,6 +15,7 @@ class TradeState(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     symbol = Column(String, nullable=False, index=True)
+    position_id = Column(String, nullable=True, index=True) # ID from positions table / MetaApi
     bot_slug = Column(String, nullable=False, index=True) # E.g., dm-bull
     
     # Position details

@@ -28,3 +28,8 @@ class Position(Base):
     # EA Bridge Execution tracking
     ea_picked_at = Column(DateTime, nullable=True)
     executed_price = Column(Float, nullable=True)
+
+    # Added for Phase 2 scaling / Reporting fixes
+    exit_price = Column(Float, nullable=True)
+    pnl = Column(Float, nullable=True)
+    closed_at = Column(DateTime, nullable=True)

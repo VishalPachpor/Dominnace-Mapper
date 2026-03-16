@@ -146,6 +146,7 @@ class TradeManager:
                         ts = TradeState(
                             user_id=user.id,
                             symbol=trade["symbol"],
+                            position_id=trade_data["id"], # Direct link to position record
                             bot_slug=signal.get("strategy_slug", "unknown"),
                             entry_price=trade["entry"],
                             sl_price=trade["sl"],

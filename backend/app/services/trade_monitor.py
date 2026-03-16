@@ -86,11 +86,31 @@ class TradeMonitorService:
         last_deal = next((d for d in deals if d["symbol"] == state.symbol and d["entryType"] == "DEAL_ENTRY_OUT"), None)
         
         is_loss = False
+        exit_price = None
+        pnl = 0.0
+        closed_at = None
         if last_deal:
+            exit_price = float(last_deal.get("price", 0))
             pnl = float(last_deal.get("profit", 0))
             is_loss = pnl < 0
-            # Also double check it's not a tiny loss (fees) vs a real SL hit
-            # if abs(float(last_deal['price']) - state.sl_price) < (state.entry_price * 0.001): is_loss = True
+            # Capture the actual finish time from the deal
+            deal_time = last_deal.get("time")
+            if deal_time:
+                try:
+                    closed_at = datetime.fromisoformat(deal_time.replace("Z", "+00:00"))
+                except Exception:
+                    closed_at = datetime.utcnow()
+        
+        # Sync back to Position table for reporting
+        if state.position_id:
+            from app.models.position import Position
+            pos = db.query(Position).filter(Position.id == state.position_id).first()
+            if pos:
+                pos.status = "CLOSED"
+                pos.exit_price = exit_price
+                pos.pnl = pnl
+                pos.closed_at = closed_at or datetime.utcnow()
+                logger.info(f"Synced exit data for Position {pos.id} (Price: {exit_price}, PnL: {pnl})")
         
         if is_loss and not state.reversal_used:
             # TRIGGER REVERSAL
