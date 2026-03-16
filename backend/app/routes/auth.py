@@ -5,10 +5,12 @@ from uuid import uuid4
 import httpx
 import jwt as pyjwt
 import logging
+from datetime import datetime
 
 from app.database.db import get_db
 from app.utils.security import hash_password, verify_password, create_access_token
 from app.models.user import User
+from app.services.analytics import AnalyticsService
 from app.config import GOOGLE_CLIENT_ID
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,10 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         password_hash=hash_password(data.password)
     )
     db.add(user)
+    try:
+        AnalyticsService.record_new_user(db)
+    except:
+        pass
     db.commit()
     return {"message": "user created"}
 
@@ -64,6 +70,8 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     if not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    user.last_login = datetime.utcnow()
+    db.commit()
     token = create_access_token(user.id)
     return {"access_token": token, "token_type": "bearer"}
 
@@ -129,7 +137,12 @@ async def google_login(data: OAuthRequest, db: Session = Depends(get_db)):
                 avatar_url=picture,
             )
             db.add(user)
+            try:
+                AnalyticsService.record_new_user(db)
+            except:
+                pass
 
+    user.last_login = datetime.utcnow()
     db.commit()
     token = create_access_token(user.id)
     logger.info(f"Google OAuth login: {email} (user_id={user.id})")

@@ -15,6 +15,7 @@ from app.config import WEBHOOK_SECRET
 from app.database.db import SessionLocal
 from app.utils.metrics import webhook_requests_total, webhook_errors_total
 from app.services.signal_router import route_signal
+from app.services.analytics import AnalyticsService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,6 +29,7 @@ async def _fanout_signal(data: dict):
     """
     db: Session = SessionLocal()
     try:
+        AnalyticsService.record_signal(db)
         routed_count = await route_signal(data, db)
         logger.info(f"[Webhook] Signal fanned out to {routed_count} users: "
                     f"symbol={data.get('symbol')} action={data.get('action')}")

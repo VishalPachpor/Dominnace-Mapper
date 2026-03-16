@@ -1,0 +1,74 @@
+
+> frontend@0.1.0 lint
+> eslint
+
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/(admin)/admin/page.tsx
+  48:12  warning  'loading' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/(admin)/admin/system/page.tsx
+  55:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  70:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/(admin)/layout.tsx
+  26:19  warning  'payload' is assigned a value but never used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                @typescript-eslint/no-unused-vars
+  28:13  error    Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/(admin)/layout.tsx:28:13
+  26 |             const payload = JSON.parse(atob(token.split('.')[1]));
+  27 |             // We'll trust the token for UI rendering, backend protects the data
+> 28 |             setIsAuthorized(true);
+     |             ^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect
+  29 |         } catch (e) {
+  30 |             router.push("/login");
+  31 |         }  react-hooks/set-state-in-effect
+  29:18  warning  'e' is defined but never used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               @typescript-eslint/no-unused-vars
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/(dashboard)/billing/page.tsx
+  37:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/(dashboard)/profile/page.tsx
+  139:37  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+  284:37  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/(dashboard)/settings/page.tsx
+  89:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/(dashboard)/strategy/page.tsx
+  66:23  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+/Users/vishalpatil/Dominance mapper/frontend/src/app/layout.tsx
+  28:9  warning  Block is not recommended. See: https://nextjs.org/docs/messages/google-font-display                                                                              @next/next/google-font-display
+  28:9  warning  Custom fonts not added in `pages/_document.js` will only load for a single page. This is discouraged. See: https://nextjs.org/docs/messages/no-page-custom-font  @next/next/no-page-custom-font
+
+/Users/vishalpatil/Dominance mapper/frontend/src/components/PerformanceChart.tsx
+  48:56  error    Unexpected any. Specify a different type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    @typescript-eslint/no-explicit-any
+  84:9   error    Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+/Users/vishalpatil/Dominance mapper/frontend/src/components/PerformanceChart.tsx:84:9
+  82 |
+  83 |     useEffect(() => {
+> 84 |         setMounted(true);
+     |         ^^^^^^^^^^ Avoid calling setState() directly within an effect
+  85 |     }, []);
+  86 |
+  87 |     const { startValue, endValue, isProfit } = useMemo(() => {  react-hooks/set-state-in-effect
+  87:25  warning  'endValue' is assigned a value but never used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               @typescript-eslint/no-unused-vars
+
+/Users/vishalpatil/Dominance mapper/frontend/src/components/Topbar.tsx
+  106:25  warning  Using `<img>` could result in slower LCP and higher bandwidth. Consider using `<Image />` from `next/image` or a custom image loader to automatically optimize images. This may incur additional usage or cost from your provider. See: https://nextjs.org/docs/messages/no-img-element  @next/next/no-img-element
+
+✖ 17 problems (8 errors, 9 warnings)
+

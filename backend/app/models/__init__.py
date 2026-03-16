@@ -9,6 +9,9 @@ from .subscription import Subscription
 from .trade_state import TradeState
 from .bot_state import BotState
 from .api_key import APIKey
+from .strategy_stats import StrategyStats
+from .platform_metrics import PlatformMetrics
+from .admin_logs import AdminLog
 
 __all__ = [
     "Base",
@@ -23,4 +26,7 @@ __all__ = [
     "TradeState",
     "BotState",
     "APIKey",
+    "StrategyStats",
+    "PlatformMetrics",
+    "AdminLog",
 ]

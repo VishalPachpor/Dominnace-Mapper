@@ -6,6 +6,7 @@ from app.models.trade_state import TradeState
 from app.models.user import User
 from app.services.execution_engine import ExecutionEngine
 from app.services.trade_manager import TradeManager
+from app.services.analytics import AnalyticsService
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,9 @@ class TradeMonitorService:
                 pos.pnl = pnl
                 pos.closed_at = closed_at or datetime.utcnow()
                 logger.info(f"Synced exit data for Position {pos.id} (Price: {exit_price}, PnL: {pnl})")
+                
+                # Update Analytics
+                AnalyticsService.update_trade_metrics(db, state.bot_slug, pnl)
         
         if is_loss and not state.reversal_used:
             # TRIGGER REVERSAL
