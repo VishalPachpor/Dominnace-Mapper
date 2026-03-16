@@ -16,12 +16,57 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("")
-def get_trades(user = Depends(get_current_user), db: Session = Depends(get_db)):
-    trades = db.query(Trade).filter(Trade.user_id == user.id).order_by(Trade.created_at.desc()).all()
-    return trades
+async def get_trades(user = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Returns closed trades from DB + live open positions from MetaApi.
+    Open positions are marked with result='OPEN' so the frontend can distinguish them.
+    """
+    # 1. Closed trades from DB
+    closed_trades = db.query(Trade).filter(Trade.user_id == user.id).order_by(Trade.created_at.desc()).all()
+    result_list = []
+    for t in closed_trades:
+        result_list.append({
+            "id": t.id,
+            "symbol": t.symbol,
+            "side": t.side,
+            "entry_price": t.entry,
+            "exit_price": t.exit,
+            "pnl": t.pnl,
+            "result": t.result or "CLOSED",
+            "volume": 0.01,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "status": "closed",
+        })
+
+    # 2. Live open positions from MetaApi
+    meta_account_id = getattr(user, "meta_account_id", None)
+    if meta_account_id:
+        try:
+            from app.services.metaapi_service import get_open_positions
+            positions = await get_open_positions(meta_account_id)
+            for p in positions:
+                side_raw = p.get("type", "")
+                side = "buy" if "BUY" in side_raw.upper() else "sell"
+                result_list.append({
+                    "id": p.get("id", ""),
+                    "symbol": p.get("symbol", ""),
+                    "side": side,
+                    "entry_price": p.get("openPrice", 0),
+                    "exit_price": None,
+                    "pnl": p.get("profit", 0),
+                    "result": "OPEN",
+                    "volume": p.get("volume", 0.01),
+                    "created_at": p.get("time", None),
+                    "status": "open",
+                    "current_price": p.get("currentPrice", 0),
+                })
+        except Exception as e:
+            logger.error(f"Failed to fetch live positions for trades list: {e}")
+
+    return result_list
 
 @router.get("/dashboard")
-def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(get_db)):
+async def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(get_db)):
 
     # 1. Fetch Real Balance AND Live Positions
     current_equity = 10000.0
@@ -33,36 +78,27 @@ def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(
     if getattr(user, "mt5_equity", 0.0) > 0:
         current_equity = user.mt5_equity
         unrealized_pnl = round(user.mt5_equity - getattr(user, "mt5_balance", 0.0), 2)
-        # Count open positions picked up by EA
         active_trades = db.query(Position).filter(
-            Position.user_id == user.id, 
-            Position.status.in_(["pending_ea", "picked_up", "executed"])
+            Position.user_id == user.id,
+            Position.status.in_(["pending_ea", "picked_up", "executed", "OPEN"])
         ).count()
         balance_fetched = True
         logger.info(f"EA Bridge equity fetched: {current_equity} for user {user.id}")
 
-    # B. Legacy MetaApi fallback
+    # B. MetaApi — use the cached service functions (same region, correct endpoints)
     elif getattr(user, "meta_account_id", None):
         try:
-            import httpx
-            from app.config import META_API_TOKEN
-
-            base = "https://mt-client-api-v1.new-york.agiliumtrade.ai"
+            from app.services.metaapi_service import get_account_information, get_open_positions
             acct = user.meta_account_id
-            headers = {"auth-token": META_API_TOKEN}
 
-            with httpx.Client(timeout=10.0) as client:
-                info_resp = client.get(f"{base}/users/current/accounts/{acct}/account-information", headers=headers)
-                if info_resp.status_code == 200:
-                    info_data = info_resp.json()
-                    current_equity = float(info_data.get("equity", info_data.get("balance", current_equity)))
-                    balance_fetched = True
+            info = await get_account_information(acct)
+            if info:
+                current_equity = float(info.get("equity", info.get("balance", current_equity)))
+                balance_fetched = True
 
-                pos_resp = client.get(f"{base}/users/current/accounts/{acct}/positions", headers=headers)
-                if pos_resp.status_code == 200:
-                    positions = pos_resp.json()
-                    active_trades = len(positions)
-                    unrealized_pnl = sum(float(p.get("profit", 0)) for p in positions)
+            positions = await get_open_positions(acct)
+            active_trades = len(positions)
+            unrealized_pnl = sum(float(p.get("profit", 0)) for p in positions)
         except Exception as e:
             logger.error(f"Failed to fetch MetaApi data for user {user.id}: {str(e)}")
 
