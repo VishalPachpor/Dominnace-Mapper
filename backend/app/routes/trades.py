@@ -121,7 +121,6 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
 
     # 2. Total PNL & Win Rate from closed trades (historical)
     trades = db.query(Trade).filter(Trade.user_id == user.id).all()
-    # Explicitly hint Pyre that `realized_pnl` is a float
     realized_float = cast(float, sum([float(t.pnl) for t in trades if t.pnl is not None]))
     unrealized_float = cast(float, unrealized_pnl)
     total_pnl = round(realized_float + unrealized_float, 2)
@@ -130,19 +129,86 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
     total_closed = len(trades)
     win_rate = (wins / total_closed * 100) if total_closed > 0 else 0
 
-    # 3. Equity curve from closed trade history
+    # 3. Equity curve — built from MetaApi deal history + live positions
     equity_data = []
-    historical_equity = cast(float, current_equity) - realized_float
-    for t in sorted(trades, key=lambda x: x.created_at):
-        if t.pnl is not None:
-            historical_equity += float(t.pnl)
-        equity_data.append({
-            "time": t.created_at.strftime("%b %d"),
-            "pnl": round(historical_equity, 2)
-        })
+    meta_account_id = getattr(user, "meta_account_id", None)
 
+    if meta_account_id:
+        try:
+            from app.services.metaapi_service import get_deal_history, get_open_positions as get_pos
+            from datetime import datetime
+
+            deals = await get_deal_history(meta_account_id)
+            live_positions = await get_pos(meta_account_id)
+
+            # Build a map of position profit by open time for live positions
+            pos_profit_map = {}
+            for p in live_positions:
+                pos_time = p.get("time", "")
+                pos_profit_map[pos_time] = p.get("profit", 0)
+
+            # Walk through deals chronologically building cumulative equity
+            running_equity = 0.0
+            for deal in sorted(deals, key=lambda d: d.get("time", "")):
+                deal_type = deal.get("type", "")
+                deal_time = deal.get("time", "")
+                deal_profit = float(deal.get("profit", 0))
+                deal_swap = float(deal.get("swap", 0))
+                deal_commission = float(deal.get("commission", 0))
+
+                if deal_type == "DEAL_TYPE_BALANCE":
+                    # Deposit/withdrawal
+                    running_equity += deal_profit
+                    try:
+                        dt = datetime.fromisoformat(deal_time.replace("Z", "+00:00"))
+                        label = dt.strftime("%b %d")
+                    except Exception:
+                        label = "Deposit"
+                    equity_data.append({"time": label, "pnl": round(running_equity, 2)})
+
+                elif deal_type in ("DEAL_TYPE_BUY", "DEAL_TYPE_SELL"):
+                    # Closed deal has profit != 0, opening deal has profit == 0
+                    if deal_profit != 0:
+                        # This is a closing deal with realized PnL
+                        running_equity += deal_profit + deal_swap + deal_commission
+                        try:
+                            dt = datetime.fromisoformat(deal_time.replace("Z", "+00:00"))
+                            label = dt.strftime("%b %d %H:%M")
+                        except Exception:
+                            label = "Trade"
+                        equity_data.append({"time": label, "pnl": round(running_equity, 2)})
+                    else:
+                        # Opening deal — find live unrealized profit for this position
+                        live_profit = pos_profit_map.get(deal_time, 0)
+                        running_equity += live_profit + deal_swap + deal_commission
+                        try:
+                            dt = datetime.fromisoformat(deal_time.replace("Z", "+00:00"))
+                            label = dt.strftime("%b %d %H:%M")
+                        except Exception:
+                            label = "Open"
+                        symbol = deal.get("symbol", "")
+                        equity_data.append({"time": f"{label} {symbol}", "pnl": round(running_equity, 2)})
+
+            # Add a "Now" point with current equity
+            equity_data.append({"time": "Now", "pnl": round(cast(float, current_equity), 2)})
+
+        except Exception as e:
+            logger.error(f"Failed to build equity curve from deal history: {e}")
+            equity_data = [{"time": "Today", "pnl": round(cast(float, current_equity), 2)}]
+
+    # Fallback if no MetaApi or no deals
     if not equity_data:
-        equity_data = [{"time": "Today", "pnl": round(current_equity, 2)}]
+        # Use DB trades if available
+        historical_equity = cast(float, current_equity) - realized_float
+        for t in sorted(trades, key=lambda x: x.created_at):
+            if t.pnl is not None:
+                historical_equity += float(t.pnl)
+            equity_data.append({
+                "time": t.created_at.strftime("%b %d"),
+                "pnl": round(historical_equity, 2)
+            })
+        if not equity_data:
+            equity_data = [{"time": "Today", "pnl": round(cast(float, current_equity), 2)}]
 
     return {
         "account_balance": round(cast(float, current_equity), 2),
@@ -150,6 +216,6 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
         "win_rate": round(cast(float, win_rate), 2),
         "total_pnl": total_pnl,
         "unrealized_pnl": round(unrealized_float, 2),
-        "equity_curve": [e for e in equity_data][-20:]
+        "equity_curve": equity_data[-30:]
     }
 

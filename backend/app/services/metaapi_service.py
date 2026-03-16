@@ -410,6 +410,48 @@ async def get_account_information(account_id: str) -> dict:
     return {}
 
 
+async def get_deal_history(account_id: str, days: int = 90) -> list:
+    """
+    Returns completed deal history from MetaApi for the given account.
+    Redis-cached for 60 seconds.
+    """
+    from datetime import datetime, timedelta
+
+    cache_key = f"deal_history:{account_id}"
+    try:
+        from app.utils.redis_client import redis_client
+        cached = redis_client.get(cache_key)
+        if cached:
+            logger.debug(f"[Cache HIT] deal_history:{account_id}")
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    try:
+        _track_call("get_deal_history")
+        start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00.000Z")
+        end = datetime.utcnow().strftime("%Y-%m-%dT23:59:59.999Z")
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{TRADE_URL}/users/current/accounts/{account_id}/history-deals/time/{start}/{end}",
+                headers=_headers()
+            )
+            resp.raise_for_status()
+            deals = resp.json()
+
+        try:
+            from app.utils.redis_client import redis_client
+            redis_client.setex(cache_key, 60, json.dumps(deals))
+        except Exception:
+            pass
+
+        return deals
+    except Exception as e:
+        logger.error(f"Error fetching deal history for {account_id}: {e}")
+    return []
+
+
 async def execute_trade(
     account_id: str,
     symbol: str,
@@ -452,6 +494,36 @@ async def execute_trade(
         logger.info(f"MetaApi trade executed on {account_id}: {result}")
 
     # Invalidate position cache so the next has_open_position() call is fresh
+    try:
+        from app.utils.redis_client import redis_client
+        redis_client.delete(f"positions:{account_id}")
+    except Exception:
+        pass
+
+    return result
+
+
+async def close_position(account_id: str, position_id: str) -> dict:
+    """
+    Closes a specific open position by its MetaApi position ID.
+    Invalidates the Redis positions cache after closing.
+    """
+    payload = {
+        "actionType": "POSITION_CLOSE_ID",
+        "positionId": position_id,
+    }
+
+    _track_call("close_position")
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{TRADE_URL}/users/current/accounts/{account_id}/trade",
+            json=payload, headers=_headers()
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        logger.info(f"MetaApi position {position_id} closed on {account_id}: {result}")
+
+    # Invalidate position cache
     try:
         from app.utils.redis_client import redis_client
         redis_client.delete(f"positions:{account_id}")
