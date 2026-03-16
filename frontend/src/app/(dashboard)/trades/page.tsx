@@ -1,7 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import api from "@/services/api";
+import PerformanceChart from "@/components/PerformanceChart";
+import ConfirmModal from "@/components/ConfirmModal";
+import TradeDetailModal from "@/components/TradeDetailModal";
 
 interface Trade {
     id: string;
@@ -15,6 +18,11 @@ interface Trade {
     created_at: string;
     volume?: number;
     status?: string;
+    commission?: number;
+    swap?: number;
+    deal_id?: string;
+    broker_time?: string;
+    source?: string;
 }
 
 export default function TradeHistoryPage() {
@@ -22,6 +30,9 @@ export default function TradeHistoryPage() {
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState("all");
     const [closing, setClosing] = useState<string | null>(null);
+    const [confirmTarget, setConfirmTarget] = useState<Trade | "all" | null>(null);
+    const [detailTrade, setDetailTrade] = useState<Trade | null>(null);
+    const [error, setError] = useState<string | null>(null);
 
     const fetchTrades = useCallback(async () => {
         try {
@@ -64,75 +75,47 @@ export default function TradeHistoryPage() {
         ? (Math.abs(avgWin * wins) / Math.abs(avgLoss * losses)).toFixed(2)
         : "—";
 
-    // ── Close position ──
-    const closePosition = async (positionId: string) => {
-        if (!confirm("Are you sure you want to close this position?")) return;
-        setClosing(positionId);
-        try {
-            await api.post(`/positions/${positionId}/close`);
-            fetchTrades();
-        } catch (err) {
-            console.error("Failed to close position", err);
-            alert("Failed to close position. Check console for details.");
-        } finally {
-            setClosing(null);
+    // ── Close position (via modal) ──
+    const handleConfirmClose = async () => {
+        setError(null);
+        if (confirmTarget === "all") {
+            setClosing("all");
+            try {
+                await api.post("/positions/close-all");
+                setConfirmTarget(null);
+                fetchTrades();
+            } catch (err) {
+                console.error("Failed to close all positions", err);
+                setError("Failed to close all positions. Please try again.");
+            } finally {
+                setClosing(null);
+            }
+        } else if (confirmTarget) {
+            setClosing(confirmTarget.id);
+            try {
+                await api.post(`/positions/${confirmTarget.id}/close`);
+                setConfirmTarget(null);
+                fetchTrades();
+            } catch (err) {
+                console.error("Failed to close position", err);
+                setError("Failed to close position. Please try again.");
+            } finally {
+                setClosing(null);
+            }
         }
     };
 
-    const closeAll = async () => {
-        if (!confirm(`Close all ${openTrades.length} open positions?`)) return;
-        try {
-            await api.post("/positions/close-all");
-            fetchTrades();
-        } catch (err) {
-            console.error("Failed to close all positions", err);
-        }
-    };
-
-    // ── Build dynamic SVG from trade history ──
-    const buildChartPath = () => {
-        if (trades.length === 0) return { line: "", area: "" };
-
-        const W = 800, H = 180;
-        let cumPnl = 0;
+    // ── Build equity curve data from trade history ──
+    const equityCurveData = useMemo(() => {
         const sorted = [...trades]
             .filter(t => t.created_at)
             .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-
-        if (sorted.length === 0) return { line: "", area: "" };
-
-        const points = sorted.map((t, i) => {
+        let cumPnl = 0;
+        return sorted.map(t => {
             cumPnl += t.pnl || 0;
-            const x = sorted.length === 1 ? W / 2 : (i / (sorted.length - 1)) * W;
-            return { x, pnl: cumPnl };
+            return { time: t.created_at, pnl: cumPnl };
         });
-
-        const min = Math.min(...points.map(p => p.pnl));
-        const max = Math.max(...points.map(p => p.pnl));
-        const range = max - min || 1;
-
-        const mapped = points.map(p => ({
-            x: p.x,
-            y: H - 20 - ((p.pnl - min) / range) * (H - 40),
-        }));
-
-        if (mapped.length === 1) {
-            return {
-                line: `M${mapped[0].x - 50},${mapped[0].y} L${mapped[0].x + 50},${mapped[0].y}`,
-                area: `M${mapped[0].x - 50},${mapped[0].y} L${mapped[0].x + 50},${mapped[0].y} L${mapped[0].x + 50},${H} L${mapped[0].x - 50},${H} Z`,
-            };
-        }
-
-        let path = `M${mapped[0].x},${mapped[0].y}`;
-        for (let i = 1; i < mapped.length; i++) {
-            const cpx = (mapped[i - 1].x + mapped[i].x) / 2;
-            path += ` C${cpx},${mapped[i - 1].y} ${cpx},${mapped[i].y} ${mapped[i].x},${mapped[i].y}`;
-        }
-
-        const last = mapped[mapped.length - 1];
-        const area = path + ` L${last.x},${H} L${mapped[0].x},${H} Z`;
-        return { line: path, area };
-    };
+    }, [trades]);
 
     // ── CSV Export ──
     const exportCSV = () => {
@@ -158,7 +141,6 @@ export default function TradeHistoryPage() {
         URL.revokeObjectURL(url);
     };
 
-    const chart = buildChartPath();
     const fmt = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     return (
@@ -176,23 +158,12 @@ export default function TradeHistoryPage() {
                             {totalPnl >= 0 ? "+" : ""}{fmt(totalPnl)}
                         </span>
                     </div>
-                    <div className="h-[180px] relative">
-                        <svg className="w-full h-full" viewBox="0 0 800 180" preserveAspectRatio="none">
-                            <defs>
-                                <linearGradient id="histGradient" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="0%" stopColor={totalPnl >= 0 ? "#4edea3" : "#ffb3b0"} stopOpacity="0.15" />
-                                    <stop offset="100%" stopColor={totalPnl >= 0 ? "#4edea3" : "#ffb3b0"} stopOpacity="0" />
-                                </linearGradient>
-                            </defs>
-                            {chart.area && <path d={chart.area} fill="url(#histGradient)" />}
-                            {chart.line && <path d={chart.line} fill="none" stroke={totalPnl >= 0 ? "#4edea3" : "#ffb3b0"} strokeWidth="2" strokeLinecap="round" />}
-                        </svg>
-                        {trades.length === 0 && !loading && (
-                            <div className="absolute inset-0 flex items-center justify-center">
-                                <span className="text-sm text-on-surface-variant">No trade data to chart</span>
-                            </div>
-                        )}
-                    </div>
+                    <PerformanceChart
+                        data={equityCurveData}
+                        height={180}
+                        showReferenceLine={false}
+                        loading={loading}
+                    />
                 </div>
 
                 {/* Summary Cards */}
@@ -241,7 +212,7 @@ export default function TradeHistoryPage() {
                 <div className="flex items-center gap-2">
                     {openTrades.length > 0 && (
                         <button
-                            onClick={closeAll}
+                            onClick={() => setConfirmTarget("all")}
                             className="flex items-center gap-1 px-3 py-1.5 bg-tertiary-container text-on-tertiary-container text-[10px] font-bold uppercase tracking-wider rounded hover:opacity-90 transition-all"
                         >
                             <span className="material-symbols-outlined text-[14px]">close</span>
@@ -330,7 +301,7 @@ export default function TradeHistoryPage() {
                                             <td className="py-4 px-4 text-center">
                                                 {isOpen ? (
                                                     <button
-                                                        onClick={() => closePosition(t.id)}
+                                                        onClick={() => setConfirmTarget(t)}
                                                         disabled={closing === t.id}
                                                         className="text-on-surface-variant hover:text-tertiary transition-colors disabled:opacity-40"
                                                         title="Close position"
@@ -340,7 +311,13 @@ export default function TradeHistoryPage() {
                                                         </span>
                                                     </button>
                                                 ) : (
-                                                    <span className="text-[10px] text-on-surface-variant">—</span>
+                                                    <button
+                                                        onClick={() => setDetailTrade(t)}
+                                                        className="text-on-surface-variant hover:text-primary transition-colors"
+                                                        title="View details"
+                                                    >
+                                                        <span className="material-symbols-outlined text-[18px]">visibility</span>
+                                                    </button>
                                                 )}
                                             </td>
                                         </tr>
@@ -362,6 +339,67 @@ export default function TradeHistoryPage() {
                     </div>
                 )}
             </div>
+
+            {/* ─── Confirm Close Modal ─── */}
+            <ConfirmModal
+                open={confirmTarget !== null}
+                title={
+                    confirmTarget === "all"
+                        ? "Close All Positions"
+                        : `Close ${confirmTarget && confirmTarget !== "all" ? confirmTarget.symbol : ""} Position`
+                }
+                description={
+                    confirmTarget === "all"
+                        ? `This will close all ${openTrades.length} open position${openTrades.length !== 1 ? "s" : ""} at market price. This action cannot be undone.`
+                        : "This position will be closed at the current market price. This action cannot be undone."
+                }
+                details={
+                    confirmTarget && confirmTarget !== "all"
+                        ? [
+                            { label: "Symbol", value: confirmTarget.symbol },
+                            { label: "Side", value: confirmTarget.side?.toUpperCase() === "BUY" ? "LONG" : "SHORT" },
+                            { label: "Entry", value: `$${confirmTarget.entry_price || "—"}` },
+                            {
+                                label: "Current PnL",
+                                value: `${(confirmTarget.pnl || 0) >= 0 ? "+" : ""}$${Math.abs(confirmTarget.pnl || 0).toFixed(2)}`,
+                                color: (confirmTarget.pnl || 0) >= 0 ? "text-secondary" : "text-tertiary",
+                            },
+                        ]
+                        : confirmTarget === "all"
+                            ? [
+                                { label: "Positions", value: `${openTrades.length}` },
+                                {
+                                    label: "Floating PnL",
+                                    value: `${openPnl >= 0 ? "+" : ""}$${fmt(Math.abs(openPnl))}`,
+                                    color: openPnl >= 0 ? "text-secondary" : "text-tertiary",
+                                },
+                            ]
+                            : undefined
+                }
+                confirmLabel={confirmTarget === "all" ? "Close All" : "Close Position"}
+                variant="danger"
+                loading={closing !== null}
+                onConfirm={handleConfirmClose}
+                onCancel={() => { setConfirmTarget(null); setError(null); }}
+            />
+
+            {/* ─── Trade Detail Modal ─── */}
+            <TradeDetailModal
+                open={detailTrade !== null}
+                trade={detailTrade}
+                onClose={() => setDetailTrade(null)}
+            />
+
+            {/* ─── Error Toast ─── */}
+            {error && (
+                <div className="fixed bottom-6 right-6 z-50 bg-tertiary text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-[scaleIn_200ms_ease-out]">
+                    <span className="material-symbols-outlined text-lg">error</span>
+                    <span className="text-sm font-medium">{error}</span>
+                    <button onClick={() => setError(null)} className="ml-2 hover:opacity-70 transition-opacity">
+                        <span className="material-symbols-outlined text-sm">close</span>
+                    </button>
+                </div>
+            )}
         </div>
     );
 }

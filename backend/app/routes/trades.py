@@ -15,40 +15,65 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.get("")
-async def get_trades(user = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_unified_trades(user_id: str, db: Session):
     """
-    Returns all trades for the user:
-    1. Closed trades from the 'trades' table (legacy EA Bridge trades)
-    2. Bot-executed positions from the 'positions' table (signal_router / trade_manager trades)
-    3. Live open positions from MetaApi
+    Normalizes legacy Trade records and modern Position records into a unified structure.
     """
-    result_list = []
+    unified_trades = []
 
     # 1. Legacy closed trades from 'trades' table
-    closed_trades = db.query(Trade).filter(Trade.user_id == user.id).order_by(Trade.created_at.desc()).all()
-    for t in closed_trades:
-        result_list.append({
+    legacy_trades = db.query(Trade).filter(Trade.user_id == user_id).all()
+    for t in legacy_trades:
+        pnl = float(t.pnl or 0)
+        result = t.result
+        if not result:
+            if pnl > 0:
+                result = "WIN"
+            elif pnl < 0:
+                result = "LOSS"
+            else:
+                result = "BE"
+
+        unified_trades.append({
             "id": t.id,
             "symbol": t.symbol,
             "side": t.side,
             "entry_price": t.entry,
             "exit_price": t.exit,
-            "pnl": t.pnl,
-            "result": t.result or "CLOSED",
+            "pnl": pnl,
+            "result": result,
             "volume": 0.01,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "created_at": t.created_at, # Keep as datetime object for sorting later
             "status": "closed",
+            "source": "legacy_trade"
         })
 
-    # 2. Bot-executed positions from the 'positions' table (what trade_manager writes)
+    # 2. Bot-executed positions from the 'positions' table
+    # We want all positions to show in history, including OPEN
     bot_positions = db.query(Position).filter(
-        Position.user_id == user.id,
+        Position.user_id == user_id,
         Position.status.in_(["success", "OPEN", "CLOSED", "TP_HIT", "STOPPED"])
-    ).order_by(Position.created_at.desc()).all()
+    ).all()
 
     for p in bot_positions:
-        result_list.append({
+        pnl = float(p.pnl or 0)
+        status = (p.status or "open").lower()
+        
+        # Calculate WIN/LOSS/BE for closed positions
+        result = "OPEN"
+        if status in ["closed", "tp_hit", "stopped", "success"]:
+            status = "closed"
+            if pnl > 0:
+                result = "WIN"
+            elif pnl < 0:
+                result = "LOSS"
+            else:
+                result = "BE"
+
+        # Use closed_at if available for chronological sorting, fallback to created_at
+        time_val = p.closed_at if p.closed_at else p.created_at
+
+        unified_trades.append({
             "id": p.id,
             "symbol": p.symbol,
             "side": p.side,
@@ -56,22 +81,46 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
             "exit_price": p.exit_price,
             "sl": p.sl,
             "tp": p.tp,
-            "pnl": p.pnl,
+            "pnl": pnl,
             "closed_at": p.closed_at.isoformat() if p.closed_at else None,
-            "result": p.status or "OPEN",
+            "result": result,
             "volume": 0.01,
-            "created_at": p.created_at.isoformat() if p.created_at else None,
-            "status": p.status.lower() if p.status else "open",
+            "created_at": time_val, # Keep as datetime object for sorting
+            "status": status,
+            "source": "bot_position"
         })
+        
+    # Sort chronologically (newest first for most lists, oldest first for equity curve)
+    unified_trades.sort(key=lambda x: x["created_at"] if x["created_at"] else datetime.min, reverse=True)
+    return unified_trades
 
-    # 3. Live open positions from MetaApi (real-time data with unrealized PnL)
+from datetime import datetime
+
+@router.get("")
+async def get_trades(user = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Returns all trades: unified DB trades + live open positions from MetaApi.
+    """
+    unified_trades = get_unified_trades(user.id, db)
+    
+    # Format dates for API response
+    result_list = []
+    for t in unified_trades:
+        formatted = dict(t)
+        if formatted["created_at"]:
+            formatted["created_at"] = formatted["created_at"].isoformat()
+        result_list.append(formatted)
+
+    # 2. Get LIVE data from MetaApi (Open Positions + Deal History)
     meta_account_id = getattr(user, "meta_account_id", None)
     if meta_account_id:
         try:
-            from app.services.metaapi_service import get_open_positions
+            from app.services.metaapi_service import get_open_positions, get_deal_history
+            
+            # Fetch Live Open Positions
             positions = await get_open_positions(meta_account_id)
-            # Only add live positions whose IDs aren't already in our list (to avoid duplicates)
-            existing_ids = {r["id"] for r in result_list}
+            existing_ids = {str(r["id"]) for r in result_list}
+            
             for p in positions:
                 pos_id = str(p.get("id", ""))
                 if pos_id in existing_ids:
@@ -90,18 +139,91 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
                     "created_at": p.get("time", None),
                     "status": "open",
                     "current_price": p.get("currentPrice", 0),
+                    "source": "metaapi_live"
                 })
+
+            # Fetch Historical Deals (Closed Trades)
+            deals = await get_deal_history(meta_account_id)
+            
+            # Map positionId -> entryPrice from DEAL_ENTRY_IN deals
+            entry_map = {}
+            for d in deals:
+                if d.get("entryType") == "DEAL_ENTRY_IN":
+                    pos_id = str(d.get("positionId", ""))
+                    if pos_id:
+                        entry_map[pos_id] = d.get("price")
+
+            # Only include DEAL_ENTRY_OUT (closing deals) that aren't already in our result_list
+            updated_existing_ids = {str(r["id"]) for r in result_list}
+            
+            for d in deals:
+                if d.get("entryType") != "DEAL_ENTRY_OUT":
+                    continue
+                
+                deal_id = str(d.get("id", ""))
+                # MetaApi usually groups by positionId. If we have a positionId, use that to avoid duplicates.
+                pos_id = str(d.get("positionId", deal_id))
+                
+                if pos_id in updated_existing_ids or deal_id in updated_existing_ids:
+                    continue
+                
+                commission = float(d.get("commission", 0))
+                swap = float(d.get("swap", 0))
+                pnl = float(d.get("profit", 0)) + swap + commission
+                side_raw = d.get("type", "")
+                
+                original_side = "sell" if "BUY" in side_raw.upper() else "buy"
+                
+                result = "BE"
+                if pnl > 0: result = "WIN"
+                elif pnl < 0: result = "LOSS"
+
+                result_list.append({
+                    "id": pos_id, 
+                    "symbol": d.get("symbol", ""),
+                    "side": original_side,
+                    "entry_price": entry_map.get(pos_id),
+                    "exit_price": d.get("price", 0),
+                    "pnl": round(pnl, 2),
+                    "result": result,
+                    "volume": d.get("volume", 0.01),
+                    "created_at": d.get("time", None),
+                    "status": "closed",
+                    "source": "metaapi_history",
+                    "commission": round(commission, 2),
+                    "swap": round(swap, 2),
+                    "deal_id": deal_id,
+                    "broker_time": d.get("brokerTime")
+                })
+
         except Exception as e:
-            logger.error(f"Failed to fetch live positions for trades list: {e}")
+            logger.error(f"Failed to fetch MetaApi data for trades list: {e}")
+
+    # Re-sort everything chronologically newest first
+    from datetime import timezone
+    def parse_time(t_str):
+        if not t_str: return datetime.min.replace(tzinfo=timezone.utc)
+        if isinstance(t_str, datetime):
+            if t_str.tzinfo is None:
+                return t_str.replace(tzinfo=timezone.utc)
+            return t_str
+        try:
+            val = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
+            if val.tzinfo is None:
+                return val.replace(tzinfo=timezone.utc)
+            return val
+        except:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    result_list.sort(key=lambda x: parse_time(x.get("created_at")), reverse=True)
 
     return result_list
 
 
 @router.get("/dashboard")
 async def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(get_db)):
-
     current_equity = 10000.0
-    active_trades = 0
+    active_trades_count = 0
     unrealized_pnl = 0.0
     daily_pnl = 0.0
     balance_fetched = False
@@ -110,7 +232,7 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
     if getattr(user, "mt5_equity", 0.0) > 0:
         current_equity = user.mt5_equity
         unrealized_pnl = round(user.mt5_equity - getattr(user, "mt5_balance", 0.0), 2)
-        active_trades = db.query(Position).filter(
+        active_trades_count = db.query(Position).filter(
             Position.user_id == user.id,
             Position.status.in_(["pending_ea", "picked_up", "executed", "OPEN"])
         ).count()
@@ -129,7 +251,7 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
                 balance_fetched = True
 
             positions = await get_open_positions(acct)
-            active_trades = len(positions)
+            active_trades_count = len(positions)
             unrealized_pnl = sum(float(p.get("profit", 0)) for p in positions)
         except Exception as e:
             logger.error(f"Failed to fetch MetaApi data for user {user.id}: {str(e)}")
@@ -151,15 +273,57 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
         except Exception as e:
             logger.error(f"Failed to fetch CCXT Binance balance for user {user.id}: {str(e)}")
 
-    # 2. Total PNL & Win Rate from closed trades (historical)
-    trades = db.query(Trade).filter(Trade.user_id == user.id).all()
-    realized_float = cast(float, sum([float(t.pnl) for t in trades if t.pnl is not None]))
+    # --- Use Unified Trades for Stats ---
+    unified_trades = get_unified_trades(user.id, db)
+    closed_trades = [t for t in unified_trades if t["status"] == "closed"]
+    
+    # 2. Merge MetaApi History if available
+    meta_account_id = getattr(user, "meta_account_id", None)
+    if meta_account_id:
+        try:
+            from app.services.metaapi_service import get_deal_history
+            deals = await get_deal_history(meta_account_id)
+            existing_ids = {str(t["id"]) for t in closed_trades}
+            
+            for d in deals:
+                if d.get("entryType") != "DEAL_ENTRY_OUT":
+                    continue
+                
+                deal_id = str(d.get("id", ""))
+                pos_id = str(d.get("positionId", deal_id))
+                
+                if pos_id in existing_ids or deal_id in existing_ids:
+                    continue
+                
+                pnl = float(d.get("profit", 0)) + float(d.get("swap", 0)) + float(d.get("commission", 0))
+                if pnl == 0: continue # Skip non-PnL deals if any
+                
+                result = "BE"
+                if pnl > 0: result = "WIN"
+                elif pnl < 0: result = "LOSS"
+                
+                closed_trades.append({
+                    "id": pos_id,
+                    "pnl": pnl,
+                    "result": result
+                })
+        except Exception as e:
+            logger.error(f"Failed to fetch MetaApi history for stats: {e}")
+
+    realized_float = sum(t["pnl"] for t in closed_trades)
     unrealized_float = cast(float, unrealized_pnl)
     total_pnl = round(realized_float + unrealized_float, 2)
 
-    wins = len([t for t in trades if t.result == "WIN"])
-    total_closed = len(trades)
-    win_rate = (wins / total_closed * 100) if total_closed > 0 else 0
+    # Win Rate (Ignoring Break Even trades)
+    wins = len([t for t in closed_trades if t["result"] == "WIN"])
+    losses = len([t for t in closed_trades if t["result"] == "LOSS"])
+    total_for_winrate = wins + losses
+    win_rate = (wins / total_for_winrate * 100) if total_for_winrate > 0 else 0
+
+    # Profit Factor
+    gross_profit = sum(t["pnl"] for t in closed_trades if t["pnl"] > 0)
+    gross_loss = abs(sum(t["pnl"] for t in closed_trades if t["pnl"] < 0))
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else None
 
     # 3. Equity curve — built from MetaApi deal history + live positions
     equity_data = []
@@ -236,25 +400,29 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
 
     # Fallback if no MetaApi or no deals
     if not equity_data:
-        # Use DB trades if available
+        # Sort oldest first for equity curve
+        chronological_trades = sorted(closed_trades, key=lambda x: x["created_at"] if x["created_at"] else datetime.min)
+        
         historical_equity = cast(float, current_equity) - realized_float
-        for t in sorted(trades, key=lambda x: x.created_at):
-            if t.pnl is not None:
-                historical_equity += float(t.pnl)
+        for t in chronological_trades:
+            historical_equity += t["pnl"]
             equity_data.append({
-                "time": t.created_at.strftime("%b %d"),
+                "time": t["created_at"].strftime("%b %d") if t["created_at"] else "Unknown",
                 "pnl": round(historical_equity, 2)
             })
+            
         if not equity_data:
             equity_data = [{"time": "Today", "pnl": round(cast(float, current_equity), 2)}]
 
     return {
         "account_balance": round(cast(float, current_equity), 2),
-        "active_trades": active_trades,
+        "active_trades": active_trades_count,
         "win_rate": round(cast(float, win_rate), 2),
+        "profit_factor": profit_factor,
         "total_pnl": total_pnl,
         "unrealized_pnl": round(unrealized_float, 2),
         "daily_pnl": round(daily_pnl, 2),
         "equity_curve": equity_data[-30:]
     }
+
 

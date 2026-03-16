@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import api from "@/services/api";
+import ConfirmModal from "@/components/ConfirmModal";
 
 interface Position {
     id: string;
@@ -23,10 +24,12 @@ export default function PositionsPage() {
     const [positions, setPositions] = useState<Position[]>([]);
     const [loading, setLoading] = useState(true);
     const [closing, setClosing] = useState<string | null>(null);
+    const [confirmTarget, setConfirmTarget] = useState<Position | "all" | null>(null);
+    const [error, setError] = useState<string | null>(null);
 
     const fetchPositions = useCallback(async () => {
         try {
-            const res = await api.get("/trades/positions");
+            const res = await api.get("/positions");
             setPositions(Array.isArray(res.data) ? res.data : []);
         } catch {
             // silently fail
@@ -47,27 +50,32 @@ export default function PositionsPage() {
         ? Math.min(...positions.map(p => p.pnl ?? p.profit ?? 0), 0)
         : 0;
 
-    const closePosition = async (positionId: string) => {
-        if (!confirm("Are you sure you want to close this position?")) return;
-        setClosing(positionId);
-        try {
-            await api.post(`/trades/positions/${positionId}/close`);
-            fetchPositions();
-        } catch (err) {
-            console.error("Failed to close position", err);
-            alert("Failed to close position. Check console for details.");
-        } finally {
-            setClosing(null);
-        }
-    };
-
-    const closeAll = async () => {
-        if (!confirm(`Close all ${positions.length} positions?`)) return;
-        try {
-            await api.post("/trades/positions/close-all");
-            fetchPositions();
-        } catch (err) {
-            console.error("Failed to close all positions", err);
+    const handleConfirmClose = async () => {
+        setError(null);
+        if (confirmTarget === "all") {
+            setClosing("all");
+            try {
+                await api.post("/positions/close-all");
+                setConfirmTarget(null);
+                fetchPositions();
+            } catch (err) {
+                console.error("Failed to close all positions", err);
+                setError("Failed to close all positions. Please try again.");
+            } finally {
+                setClosing(null);
+            }
+        } else if (confirmTarget) {
+            setClosing(confirmTarget.id);
+            try {
+                await api.post(`/positions/${confirmTarget.id}/close`);
+                setConfirmTarget(null);
+                fetchPositions();
+            } catch (err) {
+                console.error("Failed to close position", err);
+                setError("Failed to close position. Please try again.");
+            } finally {
+                setClosing(null);
+            }
         }
     };
 
@@ -119,7 +127,7 @@ export default function PositionsPage() {
                 {positions.length > 0 && (
                     <div className="flex items-center gap-2">
                         <button
-                            onClick={closeAll}
+                            onClick={() => setConfirmTarget("all")}
                             className="px-3 py-1.5 bg-tertiary-container text-on-tertiary-container text-[10px] font-bold uppercase tracking-wider rounded hover:opacity-90 transition-all"
                         >
                             Close All Positions
@@ -185,7 +193,7 @@ export default function PositionsPage() {
                                             </td>
                                             <td className="py-4 px-4 text-center">
                                                 <button
-                                                    onClick={() => closePosition(p.id)}
+                                                    onClick={() => setConfirmTarget(p)}
                                                     disabled={closing === p.id}
                                                     className="text-on-surface-variant hover:text-tertiary transition-colors disabled:opacity-40"
                                                     title="Close position"
@@ -203,6 +211,68 @@ export default function PositionsPage() {
                     </table>
                 </div>
             </div>
+
+            {/* ─── Confirm Close Modal ─── */}
+            <ConfirmModal
+                open={confirmTarget !== null}
+                title={
+                    confirmTarget === "all"
+                        ? "Close All Positions"
+                        : `Close ${confirmTarget && confirmTarget !== "all" ? confirmTarget.symbol : ""} Position`
+                }
+                description={
+                    confirmTarget === "all"
+                        ? `This will close all ${positions.length} open position${positions.length !== 1 ? "s" : ""} at market price. This action cannot be undone.`
+                        : "This position will be closed at the current market price. This action cannot be undone."
+                }
+                details={
+                    confirmTarget && confirmTarget !== "all"
+                        ? (() => {
+                            const pnl = confirmTarget.pnl ?? confirmTarget.profit ?? 0;
+                            const entry = confirmTarget.entry_price || confirmTarget.entry || 0;
+                            const side = (confirmTarget.side || confirmTarget.type || "").toUpperCase();
+                            const isBuy = side.includes("BUY") || side === "LONG";
+                            return [
+                                { label: "Symbol", value: confirmTarget.symbol },
+                                { label: "Side", value: isBuy ? "BUY" : "SELL" },
+                                { label: "Lot Size", value: `${confirmTarget.volume || 0.01}` },
+                                { label: "Entry", value: entry ? `$${entry}` : "—" },
+                                {
+                                    label: "Floating PnL",
+                                    value: `${pnl >= 0 ? "+" : ""}$${Math.abs(pnl).toFixed(2)}`,
+                                    color: pnl >= 0 ? "text-secondary" : "text-tertiary",
+                                },
+                            ];
+                        })()
+                        : confirmTarget === "all"
+                            ? [
+                                { label: "Positions", value: `${positions.length}` },
+                                { label: "Total Exposure", value: `${totalExposure.toFixed(2)} lots` },
+                                {
+                                    label: "Floating PnL",
+                                    value: `${floatingPnl >= 0 ? "+" : ""}$${fmt(Math.abs(floatingPnl))}`,
+                                    color: floatingPnl >= 0 ? "text-secondary" : "text-tertiary",
+                                },
+                            ]
+                            : undefined
+                }
+                confirmLabel={confirmTarget === "all" ? "Close All" : "Close Position"}
+                variant="danger"
+                loading={closing !== null}
+                onConfirm={handleConfirmClose}
+                onCancel={() => { setConfirmTarget(null); setError(null); }}
+            />
+
+            {/* ─── Error Toast ─── */}
+            {error && (
+                <div className="fixed bottom-6 right-6 z-50 bg-tertiary text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-[scaleIn_200ms_ease-out]">
+                    <span className="material-symbols-outlined text-lg">error</span>
+                    <span className="text-sm font-medium">{error}</span>
+                    <button onClick={() => setError(null)} className="ml-2 hover:opacity-70 transition-opacity">
+                        <span className="material-symbols-outlined text-sm">close</span>
+                    </button>
+                </div>
+            )}
         </div>
     );
 }
