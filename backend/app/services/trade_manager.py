@@ -39,7 +39,7 @@ class TradeManager:
             # Do not calculate fake stops. Rely on risk management or manual closure.
             dom_length = 0
 
-        trade = self.create_trade(symbol, action, price, dom_length)
+        trade = self.create_trade(symbol, action, price, dom_length, dom_high, dom_low)
         
         # Merge volume constraints natively
         if signal.get("custom_lot_size"):
@@ -140,7 +140,24 @@ class TradeManager:
                             "status": response.get("status", "OPEN")
                         }
                         tracker.save_position(trade_data)
-                        logger.info(f"Position saved to db for user {user.id}")
+                        
+                        # Persistent state for Reversal/BE logic (Advanced engine)
+                        from app.models.trade_state import TradeState
+                        ts = TradeState(
+                            user_id=user.id,
+                            symbol=trade["symbol"],
+                            bot_slug=signal.get("strategy_slug", "unknown"),
+                            entry_price=trade["entry"],
+                            sl_price=trade["sl"],
+                            tp_price=trade["tp"],
+                            be_trigger=trade["be_trigger"],
+                            side=trade["side"],
+                            status="OPEN"
+                        )
+                        db.add(ts)
+                        db.commit()
+                        
+                        logger.info(f"Position and TradeState saved to db for user {user.id}")
                         success_count += 1
                     else:
                         from app.utils.metrics import execution_failures_total

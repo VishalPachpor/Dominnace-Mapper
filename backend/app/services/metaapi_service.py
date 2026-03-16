@@ -153,7 +153,7 @@ async def get_account_status(account_id: str, use_cache: bool = True) -> str:
 
         return state
     except Exception as e:
-        logger.error(f"Failed to get account status for {account_id}: {e}")
+        logger.error(f"Failed to get account status for {account_id}: {repr(e)}")
         return "ERROR"
 
 
@@ -531,3 +531,35 @@ async def close_position(account_id: str, position_id: str) -> dict:
         pass
 
     return result
+
+async def update_position_sl(account_id: str, position_id: str, sl: float) -> bool:
+    """
+    Updates the Stop Loss of an existing position.
+    """
+    payload = {
+        "actionType": "POSITION_MODIFY",
+        "positionId": position_id,
+        "stopLoss": sl
+    }
+
+    _track_call("update_position_sl")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{TRADE_URL}/users/current/accounts/{account_id}/trade",
+                json=payload, headers=_headers()
+            )
+            resp.raise_for_status()
+            logger.info(f"MetaApi position {position_id} SL updated to {sl} on {account_id}")
+            
+            # Invalidate position cache
+            try:
+                from app.utils.redis_client import redis_client
+                redis_client.delete(f"positions:{account_id}")
+            except Exception:
+                pass
+            
+            return True
+    except Exception as e:
+        logger.error(f"Failed to update SL for position {position_id} on {account_id}: {e}")
+        return False

@@ -12,6 +12,9 @@ class Bot(Base):
     name = Column(String, nullable=False)
     slug = Column(String, unique=True, nullable=False, index=True)
     description = Column(String, nullable=True)
+    risk_level = Column(String, default="Medium") # e.g. Low, Medium, High
+    timeframe = Column(String, default="15m")
+    supported_symbols = Column(String, default="All") # e.g. "BTC/USDT, ETH/USDT"
     symbol = Column(String, nullable=True)
     max_lot_size = Column(Float, default=0.01)
     is_active = Column(Boolean, default=True)

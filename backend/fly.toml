@@ -12,6 +12,7 @@ primary_region = "sjc"
 [processes]
   app = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
   worker = "python -m app.workers.signal_worker"
+  monitor = "python -m app.workers.trade_monitor"
 
 [[services]]
   protocol = "tcp"

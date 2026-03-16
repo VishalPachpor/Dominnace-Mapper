@@ -1,5 +1,6 @@
-from sqlalchemy import Column, String, Boolean, DateTime, Float
+from sqlalchemy import Column, String, Boolean, DateTime, Float, ForeignKey
 from app.database.db import Base
+from sqlalchemy.orm import relationship
 from uuid import uuid4
 
 class User(Base):
@@ -38,3 +39,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     trading_paused = Column(Boolean, default=False)
+    
+    # Subscription Plan
+    plan_id = Column(String, ForeignKey("plans.id", ondelete="SET NULL"), nullable=True, index=True)
+    plan = relationship("Plan", back_populates="users")

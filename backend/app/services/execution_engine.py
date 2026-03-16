@@ -87,3 +87,15 @@ class ExecutionEngine:
                 logger.error(f"Error executing crypto trade: {e}")
                 return None
 
+    async def get_positions(self, account_id: str):
+        from app.services.metaapi_service import get_open_positions
+        return await get_open_positions(account_id)
+
+    async def update_position_sl(self, user, position_id: str, new_sl: float):
+        from app.services.metaapi_service import update_position_sl
+        return await update_position_sl(user.meta_account_id, position_id, new_sl)
+
+    async def get_deals(self, account_id: str, limit: int = 10):
+        from app.services.metaapi_service import get_deal_history
+        return await get_deal_history(account_id)
+
