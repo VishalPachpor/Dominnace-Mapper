@@ -22,17 +22,17 @@ QUEUE_NAME = "signal_queue"
 # BOT_ALIAS_MAP: Normalizes incoming "bot" slugs from TradingView to actual DB slugs.
 # Add entries here when the TradingView alert uses a different name than your DB slug.
 BOT_ALIAS_MAP = {
-    "dm-bull": "dominance_crypto",
-    "dm-bear": "dominance_crypto",
-    "dm_bull": "dominance_crypto",
+    "dominance_crypto": "dm-bull",
+    "dm_bull": "dm-bull",
+    "dm-bear": "dm-bull",
 }
 
 # SIGNAL_TYPE_MAP: Resolves signal_type field to bot slugs (fallback when "bot" field is missing).
 SIGNAL_TYPE_MAP = {
-    "dom": "dominance_crypto",
-    "dominance": "dominance_crypto",
-    "smc": "dominance_scalper",
-    "breakout": "dominance_scalper",
+    "dom": "dm-bull",
+    "dominance": "dm-bull",
+    "smc": "smc-buy",
+    "breakout": "breakout-pro",
     "gold": "dominance_gold",
     "xauusd": "dominance_gold",
 }
