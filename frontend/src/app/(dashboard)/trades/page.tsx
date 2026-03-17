@@ -16,6 +16,11 @@ interface Trade {
     pnl: number;
     result: string;
     created_at: string;
+    execution_time?: string;
+    close_time?: string;
+    execution_latency_ms?: number | null;
+    signal_time?: string | null;
+    reject_reason?: string | null;
     volume?: number;
     status?: string;
     commission?: number;
@@ -54,6 +59,13 @@ export default function TradeHistoryPage() {
     // ── Computed stats from real data ──
     const openTrades = trades.filter(t => t.status === "open" || t.result === "OPEN");
     const closedTrades = trades.filter(t => t.status === "closed" || (t.result !== "OPEN" && t.status !== "open"));
+
+    const getStatusColor = (result: string, status: string, pnl: number) => {
+        if (status === "open") return "text-primary";
+        if (result === "WIN") return "text-secondary";
+        if (result === "LOSS" || result === "FAILED") return "text-tertiary";
+        return "text-on-surface-variant";
+    };
 
     const filteredTrades = trades.filter(t => {
         if (filter === "all") return true;
@@ -265,8 +277,13 @@ export default function TradeHistoryPage() {
                                             <td className="py-4 px-6">
                                                 <div className="flex flex-col">
                                                     <span className="text-sm font-bold text-on-surface">{t.symbol}</span>
-                                                    <span className="text-[10px] text-on-surface-variant font-mono">
-                                                        {t.created_at ? new Date(t.created_at).toLocaleDateString() : "—"}
+                                                    <span className="text-[10px] text-on-surface-variant font-mono whitespace-nowrap">
+                                                        {(() => {
+                                                            const d = t.execution_time || t.created_at;
+                                                            if (!d) return "—";
+                                                            const date = new Date(d);
+                                                            return `${date.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" })} • ${date.toLocaleTimeString("en-GB", { hour12: false, timeZone: "Asia/Kolkata" })}`;
+                                                        })()}
                                                     </span>
                                                 </div>
                                             </td>
@@ -346,7 +363,7 @@ export default function TradeHistoryPage() {
                 title={
                     confirmTarget === "all"
                         ? "Close All Positions"
-                        : `Close ${confirmTarget && confirmTarget !== "all" ? confirmTarget.symbol : ""} Position`
+                        : `Close ${confirmTarget ? confirmTarget.symbol : ""} Position`
                 }
                 description={
                     confirmTarget === "all"
@@ -354,24 +371,24 @@ export default function TradeHistoryPage() {
                         : "This position will be closed at the current market price. This action cannot be undone."
                 }
                 details={
-                    confirmTarget && confirmTarget !== "all"
+                    confirmTarget === "all"
                         ? [
-                            { label: "Symbol", value: confirmTarget.symbol },
-                            { label: "Side", value: confirmTarget.side?.toUpperCase() === "BUY" ? "LONG" : "SHORT" },
-                            { label: "Entry", value: `$${confirmTarget.entry_price || "—"}` },
-                            {
-                                label: "Current PnL",
-                                value: `${(confirmTarget.pnl || 0) >= 0 ? "+" : ""}$${Math.abs(confirmTarget.pnl || 0).toFixed(2)}`,
-                                color: (confirmTarget.pnl || 0) >= 0 ? "text-secondary" : "text-tertiary",
-                            },
-                        ]
-                        : confirmTarget === "all"
-                            ? [
                                 { label: "Positions", value: `${openTrades.length}` },
                                 {
                                     label: "Floating PnL",
                                     value: `${openPnl >= 0 ? "+" : ""}$${fmt(Math.abs(openPnl))}`,
                                     color: openPnl >= 0 ? "text-secondary" : "text-tertiary",
+                                },
+                            ]
+                        : confirmTarget
+                            ? [
+                                { label: "Symbol", value: confirmTarget.symbol },
+                                { label: "Side", value: confirmTarget.side?.toUpperCase() === "BUY" ? "LONG" : "SHORT" },
+                                { label: "Entry", value: `$${confirmTarget.entry_price || "—"}` },
+                                {
+                                    label: "Current PnL",
+                                    value: `${(confirmTarget.pnl || 0) >= 0 ? "+" : ""}$${Math.abs(confirmTarget.pnl || 0).toFixed(2)}`,
+                                    color: (confirmTarget.pnl || 0) >= 0 ? "text-secondary" : "text-tertiary",
                                 },
                             ]
                             : undefined

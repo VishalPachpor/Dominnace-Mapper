@@ -80,6 +80,10 @@ class RiskGuardService:
         # 4. Daily Drawdown Guard (Equity based)
         try:
             account_info = await get_account_information(account_id)
+            if not account_info:
+                logger.warning(f"TRADE_REJECTED reason=broker_disconnected user={user_id} symbol={symbol} (account_info empty)")
+                raise RiskGuardException("broker_disconnected", "Could not fetch account equity from broker API.")
+                
             equity = account_info.get("equity", 0)
             balance = account_info.get("balance", 0)
         except Exception as e:

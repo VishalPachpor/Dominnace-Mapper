@@ -107,7 +107,7 @@ export default function AdminTrades() {
                                                 </div>
                                                 <div className="flex flex-col">
                                                     <span className="text-sm font-bold text-on-surface">{t.symbol}</span>
-                                                    <span className="text-[10px] uppercase font-bold text-on-surface-variant">{t.side} | {t.type}</span>
+                                                    <span className="text-[10px] uppercase font-bold text-on-surface-variant">{t.side}</span>
                                                 </div>
                                             </div>
                                         </td>

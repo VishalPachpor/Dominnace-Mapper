@@ -3,10 +3,13 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 import bcrypt
+import logging
 from datetime import datetime, timedelta, timezone
 from app.config import JWT_SECRET, JWT_ALGORITHM
 from app.database.db import get_db
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
@@ -36,12 +39,15 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
+            logger.warning("JWT validation failed: 'sub' claim missing.")
             raise credentials_exception
-    except JWTError:
+    except JWTError as e:
+        logger.warning(f"JWT validation failed: {str(e)}")
         raise credentials_exception
     
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
+        logger.warning(f"JWT validation failed: user {user_id} not found in DB.")
         raise credentials_exception
     
     return user

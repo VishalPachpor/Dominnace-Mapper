@@ -26,6 +26,7 @@ def get_plans_overview(db: Session = Depends(get_db), admin: User = Depends(requ
             "name": p.name,
             "price": p.price_usd,
             "users": user_count,
-            "monthly_revenue": round(user_count * p.price_usd, 2)
+            "monthly_revenue": round(user_count * p.price_usd, 2),
+            "max_strategies": p.max_strategies
         })
     return results

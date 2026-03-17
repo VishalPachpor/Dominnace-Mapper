@@ -4,7 +4,7 @@ import time
 import os
 import sentry_sdk
 from app.services.trade_monitor import TradeMonitorService
-from app.routes.admin import is_trading_enabled
+from app.routes.admin.admin_system import is_trading_enabled
 
 # Initialize Sentry
 sentry_dsn = os.getenv("SENTRY_DSN")

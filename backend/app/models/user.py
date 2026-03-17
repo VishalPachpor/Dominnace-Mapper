@@ -9,14 +9,15 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
-    email = Column(String, unique=True, nullable=False)
+    email = Column(String, unique=True, nullable=False, index=True)
     password_hash = Column(String, nullable=True)  # Nullable for OAuth-only users
+    email_verified = Column(Boolean, default=False)
 
-    # OAuth (Google / Apple Sign In)
-    oauth_provider = Column(String(20), nullable=True)   # "google" | "apple" | None
-    oauth_sub = Column(String(255), unique=True, nullable=True)  # Provider subject ID
     full_name = Column(String(200), nullable=True)
     avatar_url = Column(String(500), nullable=True)
+
+    # Relationships
+    oauth_accounts = relationship("OAuthAccount", back_populates="user", cascade="all, delete-orphan")
     
     # Binance / CCXT
     exchange_api_key = Column(String, nullable=True)

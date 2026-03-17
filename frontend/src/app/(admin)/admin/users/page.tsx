@@ -7,14 +7,11 @@ interface AdminUser {
     id: string;
     email: string;
     status: string;
-    plan_name: string;
+    plan: string;
     created_at: string;
     last_login: string | null;
-    stats: {
-        total_trades: number;
-        total_pnl: number;
-        win_rate: number;
-    };
+    total_trades: number;
+    total_pnl: number;
 }
 
 export default function AdminUsers() {
@@ -112,15 +109,15 @@ export default function AdminUsers() {
                                             </span>
                                         </td>
                                         <td className="py-4 px-6">
-                                            <span className="text-sm text-on-surface">{u.plan_name}</span>
+                                            <span className="text-sm text-on-surface">{u.plan}</span>
                                         </td>
                                         <td className="py-4 px-6 text-right">
                                             <div className="flex flex-col items-end">
-                                                <span className={`text-sm font-bold ${u.stats.total_pnl >= 0 ? "text-secondary" : "text-tertiary"}`}>
-                                                    {u.stats.total_pnl >= 0 ? "+" : ""}{u.stats.total_pnl.toFixed(2)}
+                                                <span className={`text-sm font-bold ${u.total_pnl >= 0 ? "text-secondary" : "text-tertiary"}`}>
+                                                    {u.total_pnl >= 0 ? "+" : ""}{u.total_pnl.toFixed(2)}
                                                 </span>
                                                 <span className="text-[10px] text-on-surface-variant">
-                                                    WR: {u.stats.win_rate}% | {u.stats.total_trades} trades
+                                                    {u.total_trades} trades
                                                 </span>
                                             </div>
                                         </td>
@@ -130,7 +127,7 @@ export default function AdminUsers() {
                                                     Last: {u.last_login ? new Date(u.last_login).toLocaleDateString() : "Never"}
                                                 </span>
                                                 <span className="text-[10px] text-on-surface-variant font-mono">
-                                                    Join: {new Date(u.created_at).toLocaleDateString()}
+                                                    Join: {u.created_at ? new Date(u.created_at).toLocaleDateString() : "N/A"}
                                                 </span>
                                             </div>
                                         </td>

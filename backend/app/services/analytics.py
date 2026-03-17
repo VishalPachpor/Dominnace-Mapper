@@ -33,7 +33,7 @@ class AnalyticsService:
                 metrics = PlatformMetrics(date=today)
                 db.add(metrics)
             
-            metrics.trades += 1
+            metrics.trades = (metrics.trades or 0) + 1
             
             # 3. Update Redis Counters (Today's observability)
             redis_client.incr("trades_today")
@@ -52,7 +52,7 @@ class AnalyticsService:
             if not metrics:
                 metrics = PlatformMetrics(date=today)
                 db.add(metrics)
-            metrics.signals += 1
+            metrics.signals = (metrics.signals or 0) + 1
             db.commit()
             
             redis_client.incr("signals_today")
@@ -69,7 +69,7 @@ class AnalyticsService:
             if not metrics:
                 metrics = PlatformMetrics(date=today)
                 db.add(metrics)
-            metrics.new_users += 1
+            metrics.new_users = (metrics.new_users or 0) + 1
             db.commit()
         except Exception as e:
             logger.error(f"Failed to record new user analytics: {e}")

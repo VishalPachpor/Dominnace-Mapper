@@ -12,6 +12,10 @@ interface Trade {
     pnl: number;
     result: string;
     created_at: string;
+    execution_time?: string;
+    close_time?: string;
+    execution_latency_ms?: number | null;
+    signal_time?: string;
     volume?: number;
     status?: string;
     commission?: number;
@@ -46,12 +50,15 @@ export default function TradeDetailModal({
     if (!open || !trade) return null;
 
     const isWin = trade.result === "WIN";
-    const statusColor = trade.status === "open" ? "text-primary" : isWin ? "text-secondary" : "text-tertiary";
+    const statusColor = trade.status === "open" ? "text-primary" : trade.result === "FAILED" || trade.result === "LOSS" ? "text-tertiary" : isWin ? "text-secondary" : "text-on-surface-variant";
     
+    const fmtDate = (d?: string) => d ? new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Asia/Kolkata" }) : "—";
+
     const details = [
         { label: "Status", value: trade.status === "open" ? "LIVE" : trade.result || "CLOSED", color: statusColor },
         { label: "Symbol", value: trade.symbol },
         { label: "Side", value: trade.side?.toUpperCase() === "BUY" ? "LONG" : "SHORT", color: trade.side?.toUpperCase() === "BUY" ? "text-secondary" : "text-tertiary" },
+        ...(trade.reject_reason ? [{ label: "Failure Reason", value: trade.reject_reason, className: "text-tertiary text-xs col-span-2 break-words" }] : []),
         { label: "Volume", value: `${trade.volume || 0.01} lots` },
         { label: "Entry Price", value: trade.entry_price || "—" },
         { label: "Exit Price", value: trade.exit_price || "—" },
@@ -59,8 +66,10 @@ export default function TradeDetailModal({
         { label: "Swap", value: trade.swap !== undefined ? `$${trade.swap.toFixed(2)}` : "—" },
         { label: "Net PnL", value: `$${trade.pnl.toFixed(2)}`, color: statusColor },
         { label: "Deal ID", value: trade.deal_id || "—" },
-        { label: "Opened At", value: trade.created_at ? new Date(trade.created_at).toLocaleString() : "—" },
-        { label: "Broker Time", value: trade.broker_time || "—" },
+        { label: "Signal Time", value: fmtDate(trade.signal_time) },
+        { label: "Execution Time", value: trade.execution_time ? fmtDate(trade.execution_time) : fmtDate(trade.created_at) },
+        { label: "Latency", value: trade.execution_latency_ms !== undefined && trade.execution_latency_ms !== null ? `${trade.execution_latency_ms} ms` : "—", color: (trade.execution_latency_ms || 0) > 2000 ? "text-tertiary" : "text-secondary" },
+        { label: "Close Time", value: fmtDate(trade.close_time) },
         { label: "Source", value: trade.source || "—" },
     ];
 

@@ -14,6 +14,7 @@ import json
 import asyncio
 import logging
 import httpx
+from typing import Optional
 from app.utils.crypto_util import decrypt_password
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ SYMBOL_MAP: dict[str, list[str]] = {
     "EURUSD": ["EURUSD", "EURUSDm", "EURUSD.a"],
     "GBPUSD": ["GBPUSD", "GBPUSDm", "GBPUSD.a"],
     "BTCUSD": ["BTCUSD", "BTCUSDm", "BTCUSD.a", "BTCUSDT"],
+    "ETHUSD": ["ETHUSD", "ETHUSDm", "ETHUSD.a", "ETHUSDT"],
     "XAGUSD": ["XAGUSD", "XAGUSDm"],
 }
 
@@ -57,7 +59,7 @@ def _track_call(endpoint: str):
 
 
 def _headers() -> dict:
-    token = os.environ.get("META_API_TOKEN")
+    token = os.environ.get("META_API_TOKEN", "").strip()
     if not token:
         raise ValueError("META_API_TOKEN is not set in environment variables.")
     return {
@@ -410,6 +412,61 @@ async def get_account_information(account_id: str) -> dict:
     return {}
 
 
+async def get_symbol_specification(account_id: str, symbol: str) -> dict:
+    """
+    Returns MT5 symbol specification from MetaApi (minVolume, stopLevel, digits, point, etc.).
+    Redis-cached for 10 MINUTES — broker specs almost never change mid-session.
+
+    Used by the Execution Adapter to normalize volume, SL/TP, and price precision
+    before every trade so we never get broker rejections for invalid parameters.
+    """
+    cache_key = f"sym_spec:{account_id}:{symbol}"
+    try:
+        from app.utils.redis_client import redis_client
+        cached = redis_client.get(cache_key)
+        if cached:
+            logger.debug(f"[Cache HIT] sym_spec:{symbol}")
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    candidates = [symbol]
+    canonical = resolve_symbol(symbol)
+    if canonical not in candidates:
+        candidates.append(canonical)
+    for variant in SYMBOL_MAP.get(canonical, []):
+        if variant not in candidates:
+            candidates.append(variant)
+
+    try:
+        _track_call("get_symbol_specification")
+        async with httpx.AsyncClient(timeout=10) as client:
+            for candidate in candidates:
+                try:
+                    resp = await client.get(
+                        f"{TRADE_URL}/users/current/accounts/{account_id}/symbols/{candidate}",
+                        headers=_headers()
+                    )
+                    resp.raise_for_status()
+                    spec = resp.json()
+
+                    try:
+                        from app.utils.redis_client import redis_client
+                        redis_client.setex(cache_key, 600, json.dumps(spec))
+                    except Exception:
+                        pass
+
+                    logger.info(f"[MetaApi] Symbol spec for {candidate}: minVol={spec.get('minVolume')}, stopLevel={spec.get('stopLevel')}, digits={spec.get('digits')}")
+                    return spec
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 404:
+                        raise
+                    logger.info(f"[MetaApi] Symbol spec not found for candidate {candidate} on {account_id}")
+    except Exception as e:
+        logger.error(f"Error fetching symbol specification for {symbol} on {account_id}: {e}")
+    return {}
+
+
 async def get_deal_history(account_id: str, days: int = 90) -> list:
     """
     Returns completed deal history from MetaApi for the given account.
@@ -457,8 +514,8 @@ async def execute_trade(
     symbol: str,
     side: str,
     volume: float = 0.01,
-    sl: float = 0,
-    tp: float = 0
+    sl: Optional[float] = 0,
+    tp: Optional[float] = 0
 ) -> dict:
     """
     Places a market order via MetaApi.
@@ -478,10 +535,10 @@ async def execute_trade(
         "comment": "DominanceMapper",
         "magic": 12345
     }
-    if sl > 0:
-        payload["stopLoss"] = sl
-    if tp > 0:
-        payload["takeProfit"] = tp
+    if sl is not None and float(sl) > 0:
+        payload["stopLoss"] = float(sl)
+    if tp is not None and float(tp) > 0:
+        payload["takeProfit"] = float(tp)
 
     _track_call("execute_trade")
     async with httpx.AsyncClient(timeout=30) as client:

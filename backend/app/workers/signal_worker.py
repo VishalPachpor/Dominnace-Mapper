@@ -2,7 +2,7 @@ import json
 import asyncio
 from app.utils.redis_client import redis_client
 from app.services.trade_manager import TradeManager
-from app.routes.admin import is_trading_enabled
+from app.routes.admin.admin_system import is_trading_enabled
 from app.utils.metrics import (
     signals_processed_total,
     worker_processing_latency_seconds,

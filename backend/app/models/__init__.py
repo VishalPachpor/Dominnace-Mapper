@@ -12,6 +12,8 @@ from .api_key import APIKey
 from .strategy_stats import StrategyStats
 from .platform_metrics import PlatformMetrics
 from .admin_logs import AdminLog
+from .oauth_account import OAuthAccount, AuthProvider
+from .signal_failure import SignalFailure
 
 __all__ = [
     "Base",
@@ -29,4 +31,7 @@ __all__ = [
     "StrategyStats",
     "PlatformMetrics",
     "AdminLog",
+    "OAuthAccount",
+    "AuthProvider",
+    "SignalFailure",
 ]

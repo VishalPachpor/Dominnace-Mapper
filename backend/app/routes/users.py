@@ -54,7 +54,7 @@ def get_user_profile(user=Depends(get_current_user)):
         "email": user.email,
         "full_name": user.full_name or "",
         "avatar_url": user.avatar_url or "",
-        "oauth_provider": user.oauth_provider,
+        "oauth_provider": None,
         "bio": "",  # TODO: add bio column to users table
         "telegram_alerts": True,
         "push_notifications": False,

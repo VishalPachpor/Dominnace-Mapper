@@ -2,6 +2,7 @@ import ccxt
 import os
 import logging
 import uuid
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class ExecutionEngine:
     async def open_trade(self, user, trade_dict):
         symbol = trade_dict["symbol"]
         side = trade_dict["side"]
+        from app.services.metaapi_service import resolve_symbol as canonicalize_symbol
         
         # ── Critical Protection: Position Risk Guard ─────────────────────────
         # Enforce maximum safety lot size natively
@@ -39,12 +41,14 @@ class ExecutionEngine:
         
         # ── Critical Protection: Symbol Whitelist ────────────────────────────
         ALLOWED_SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD", "ETHUSD", "US30", "NAS100", "BTCUSDT", "ETHUSDT"]
-        if symbol not in ALLOWED_SYMBOLS:
+        if symbol not in ALLOWED_SYMBOLS and canonicalize_symbol(symbol) not in ALLOWED_SYMBOLS:
             logger.warning(f"Rejected trade: Symbol {symbol} not in ALLOWED_SYMBOLS whitelist.")
             return {"status": "rejected", "reason": "unauthorized_symbol"}
 
-        sl = float(trade_dict.get("sl", 0))
-        tp = float(trade_dict.get("tp", 0))
+        raw_sl = trade_dict.get("sl", 0)
+        raw_tp = trade_dict.get("tp", 0)
+        sl = float(raw_sl) if raw_sl is not None else None
+        tp = float(raw_tp) if raw_tp is not None else None
 
         logger.info(f"ExecutionEngine: Routing trade {side} {volume} {symbol} (Capped from {requested_volume}) for User {user.id}")
 
@@ -62,15 +66,23 @@ class ExecutionEngine:
                 return {"status": "skipped", "reason": "duplicate_position"}
 
             # ── Execute via MetaApi ───────────────────────────────────────────
-            result = await execute_trade(
-                account_id=meta_account_id,
-                symbol=symbol,
-                side=side,
-                volume=volume,
-                sl=sl,
-                tp=tp
-            )
-            return {"status": "success", "broker": "metaapi", "result": result}
+            try:
+                result = await execute_trade(
+                    account_id=meta_account_id,
+                    symbol=symbol,
+                    side=side,
+                    volume=volume,
+                    sl=sl,
+                    tp=tp
+                )
+                return {"status": "success", "broker": "metaapi", "result": result}
+            except httpx.HTTPStatusError as exc:
+                try:
+                    error_result = exc.response.json()
+                except Exception:
+                    error_result = {"message": exc.response.text}
+                logger.warning(f"MetaApi rejected trade for user {user.id}: {error_result}")
+                return {"status": "rejected", "broker": "metaapi", "result": error_result}
 
         else:
             # Route to Crypto (Binance)
@@ -98,4 +110,3 @@ class ExecutionEngine:
     async def get_deals(self, account_id: str, limit: int = 10):
         from app.services.metaapi_service import get_deal_history
         return await get_deal_history(account_id)
-

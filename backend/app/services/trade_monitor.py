@@ -113,6 +113,15 @@ class TradeMonitorService:
                 pos.closed_at = closed_at or datetime.utcnow()
                 logger.info(f"Synced exit data for Position {pos.id} (Price: {exit_price}, PnL: {pnl})")
                 
+                from app.models.trade import Trade
+                trade_record = db.query(Trade).filter(Trade.id == state.position_id).first()
+                if trade_record:
+                    trade_record.status = "CLOSED"
+                    trade_record.close_time = pos.closed_at
+                    trade_record.exit = exit_price
+                    trade_record.pnl = pnl
+                    logger.info(f"Synced exit data for Trade(CLOSED) {trade_record.id}")
+
                 # Update Analytics
                 AnalyticsService.update_trade_metrics(db, state.bot_slug, pnl)
         

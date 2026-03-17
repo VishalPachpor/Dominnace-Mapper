@@ -4,9 +4,12 @@ primary_region = "sjc"
 [build]
   dockerfile = "Dockerfile"
 
+[deploy]
+  release_command = "alembic upgrade head"
+
 [env]
   PORT = "8000"
-  FRONTEND_URL = "*"
+  FRONTEND_URL = "https://lingering-moon-9343.fly.dev,http://localhost:3000,http://127.0.0.1:3000"
   BINANCE_TESTNET = "True"
 
 [processes]

@@ -1,0 +1,14 @@
+2026-03-17 14:30:48 [INFO] __main__: Signal worker started. Listening for signals on port 8001 (metrics)...
+2026-03-17 14:40:06 [INFO] __main__: Processing signal: {'secret': 'superwebhooksecret', 'bot': 'dominance_crypto', 'symbol': 'BTCUSDT', 'action': 'BUY', 'price': 74436.0, 'sl': 74400.0, 'tp': 74450.0, 'dom_high': 75000, 'dom_low': 74000, 'custom_lot_size': None, 'signal_type': 'DOM', 'signal_id': 'e1911971-6c94-4f22-9bc4-8876e029e7a1', 'signal_time': '2026-03-17T09:10:06.053703+00:00', 'user_id': 'ddcaf267-edf0-44c0-90a2-072b119e2e6d', 'bot_id': 'f498ff26-7875-469c-80e6-bcf3b9aed73d', 'bot_name': 'Dominance Crypto', 'side': 'BUY', 'type': 'MARKET', 'max_bot_lot_size': 0.02}
+2026-03-17 14:40:07 [INFO] app.services.trade_manager: TradeManager processing signal: Action=buy, Symbol=BTCUSDT, Entry=74436.0 for user ddcaf267-edf0-44c0-90a2-072b119e2e6d
+2026-03-17 14:40:07 [INFO] httpx: HTTP Request: GET https://mt-client-api-v1.london.agiliumtrade.ai/users/current/accounts/f388ba93-dc08-42fa-9384-f111a1a75af6/positions "HTTP/1.1 200 OK"
+2026-03-17 14:40:08 [INFO] httpx: HTTP Request: GET https://mt-client-api-v1.london.agiliumtrade.ai/users/current/accounts/f388ba93-dc08-42fa-9384-f111a1a75af6/accountInformation "HTTP/1.1 200 OK"
+2026-03-17 14:40:08 [INFO] app.services.execution_adapter: [Adapter] Fetching symbol spec for BTCUSDT on f388ba93-dc08-42fa-9384-f111a1a75af6
+2026-03-17 14:40:09 [INFO] httpx: HTTP Request: GET https://mt-client-api-v1.london.agiliumtrade.ai/users/current/accounts/f388ba93-dc08-42fa-9384-f111a1a75af6/symbols/BTCUSDT "HTTP/1.1 404 Not Found"
+2026-03-17 14:40:09 [ERROR] app.services.metaapi_service: Error fetching symbol specification for BTCUSDT on f388ba93-dc08-42fa-9384-f111a1a75af6: Client error '404 Not Found' for url 'https://mt-client-api-v1.london.agiliumtrade.ai/users/current/accounts/f388ba93-dc08-42fa-9384-f111a1a75af6/symbols/BTCUSDT'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+2026-03-17 14:40:09 [WARNING] app.services.trade_manager: [Adapter] Broker spec unavailable for ddcaf267-edf0-44c0-90a2-072b119e2e6d: Could not fetch symbol specification for 'BTCUSDT' from MetaApi. Proceeding with raw signal.
+2026-03-17 14:40:09 [INFO] app.services.execution_engine: ExecutionEngine: Routing trade buy 0.02 BTCUSD (Capped from 0.02) for User ddcaf267-edf0-44c0-90a2-072b119e2e6d
+2026-03-17 14:40:09 [INFO] app.services.metaapi_service: Duplicate guard: position already open for BTCUSD on account f388ba93-dc08-42fa-9384-f111a1a75af6
+2026-03-17 14:40:09 [INFO] app.services.execution_engine: Duplicate guard: skipping BTCUSD — position already open.
+2026-03-17 14:40:09 [WARNING] app.services.trade_manager: Trade Execution FAILED for user ddcaf267-edf0-44c0-90a2-072b119e2e6d. Reason: skipped

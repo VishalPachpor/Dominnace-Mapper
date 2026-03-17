@@ -28,7 +28,7 @@ def list_trades(db: Session = Depends(get_db), admin: User = Depends(require_adm
             "user": email,
             "symbol": pos.symbol,
             "side": pos.side,
-            "entry_price": pos.entry_price,
+            "entry_price": pos.entry,
             "exit_price": pos.exit_price,
             "pnl": pos.pnl,
             "status": pos.status,

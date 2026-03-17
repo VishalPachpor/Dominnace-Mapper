@@ -1,5 +1,7 @@
 import logging
 from app.services.execution_engine import ExecutionEngine
+from app.services.execution_adapter import adapt_order
+from app.services.exceptions import ExecutionValidationError, BrokerAdapterError
 from app.database.db import SessionLocal
 from app.models.user import User
 from app.utils.telegram import send_telegram_message
@@ -16,6 +18,8 @@ class TradeManager:
         symbol = signal.get("symbol")
         action = (signal.get("action") or signal.get("side", "")).lower()
         price = float(signal.get("price", 0))
+        dom_high = None
+        dom_low = None
         
         # New Bot Context
         user_id = signal.get("user_id")
@@ -50,6 +54,50 @@ class TradeManager:
             trade["volume"] = float(signal.get("volume"))
 
         db = SessionLocal()
+        signal_id = signal.get("signal_id")
+        from app.models.signal import Signal
+        if signal_id:
+            signal_exists = db.query(Signal.id).filter(Signal.id == signal_id).first()
+            if not signal_exists:
+                signal_id = None
+
+        if not signal_id:
+            signal_time_str = signal.get("signal_time")
+            signal_time = None
+            if signal_time_str:
+                from datetime import datetime, timedelta, timezone
+                try:
+                    signal_time = datetime.fromisoformat(signal_time_str.replace("Z", "+00:00"))
+                    if signal_time.tzinfo is None:
+                        signal_time = signal_time.replace(tzinfo=timezone.utc)
+                except Exception:
+                    signal_time = None
+
+            signal_query = db.query(Signal.id).filter(
+                Signal.bot_id == bot_id,
+                Signal.symbol == symbol,
+                Signal.direction == action.upper(),
+            )
+            if signal_time:
+                from datetime import timedelta
+                window_start = signal_time - timedelta(minutes=5)
+                window_end = signal_time + timedelta(minutes=5)
+                signal_query = signal_query.filter(
+                    Signal.signal_time >= window_start,
+                    Signal.signal_time <= window_end,
+                )
+
+            resolved_signal = signal_query.order_by(Signal.created_at.desc()).first()
+            if resolved_signal:
+                signal_id = resolved_signal.id
+                logger.info(
+                    f"Resolved missing signal_id for {symbol} via signal lookup: {signal_id}"
+                )
+
+        if not signal_id:
+            logger.warning(f"Skipping execution: missing or unknown signal_id for {symbol}. Enforcing webhook-only trades.")
+            db.close()
+            return
         
         import time
         start_time = time.time()
@@ -110,10 +158,102 @@ class TradeManager:
                         skipped_count += 1
                         continue
                         
+                    # ── Execution Adapter: Broker-aware normalization ──
+                    # Runs BEFORE any MetaApi call. Normalizes symbol, volume, SL/TP
+                    # and price precision for this specific broker account.
+                    adapted_order = None
+                    try:
+                        if user.meta_account_id:
+                            adapted_order = await adapt_order(signal, user.meta_account_id)
+                            # Merge adapted values back into trade dict so engine uses them
+                            trade["symbol"]  = adapted_order.get("symbol", trade["symbol"])
+                            trade["volume"]  = adapted_order.get("volume", trade.get("volume"))
+                            trade["sl"]      = adapted_order.get("sl", trade.get("sl"))
+                            trade["tp"]      = adapted_order.get("tp", trade.get("tp"))
+                            if adapted_order.get("_stops_adjusted"):
+                                logger.info(f"[Adapter] Stops auto-adjusted for broker compliance on account {user.meta_account_id}")
+                    except ExecutionValidationError as eva:
+                        from app.utils.metrics import execution_failures_total
+                        execution_failures_total.labels(reason=eva.code).inc()
+                        logger.warning(f"[Adapter] PRE_VALIDATION failed for user {user.id}: {eva}")
+                        # Log the failure to DB so it shows in the UI
+                        from app.models.trade import Trade
+                        from datetime import datetime, timezone
+                        import uuid
+                        db.add(Trade(
+                            id=str(uuid.uuid4()),
+                            user_id=user.id,
+                            signal_id=signal_id,
+                            bot_id=bot_id,
+                            symbol=trade["symbol"],
+                            side=trade["side"],
+                            entry=trade["entry"],
+                            lot_size=trade.get("volume"),
+                            execution_time=datetime.now(timezone.utc),
+                            status="EXECUTION_FAILED",
+                            result="FAILED",
+                            reject_reason=str(eva),
+                        ))
+                        db.commit()
+                        failure_count += 1
+                        continue
+                    except BrokerAdapterError as bae:
+                        logger.warning(f"[Adapter] Broker spec unavailable for {user.id}: {bae}. Proceeding with raw signal.")
+                        # Non-fatal: continue with original trade dict (broker will reject if invalid)
+
                     # Execute
                     response = await self.engine.open_trade(user, trade)
                     
+                    # ── SAFE Mode Broker Retry ──
+                    # Some brokers report stopLevel=0 but still reject the order with INVALID_STOPS.
+                    meta_result = response.get("result", {}) if response else {}
                     if response:
+                        string_code = meta_result.get("stringCode")
+                        from app.services.execution_adapter import EXECUTION_MODE
+                        if (
+                            string_code == "TRADE_RETCODE_INVALID_STOPS"
+                            and EXECUTION_MODE == "SAFE"
+                            and (trade.get("sl") is not None or trade.get("tp") is not None)
+                        ):
+                            logger.warning(f"[TradeManager] Broker rejected with INVALID_STOPS. SAFE mode active: retrying without stops for {user.id}")
+                            trade["sl"] = None
+                            trade["tp"] = None
+                            trade["_execution_note"] = "Stops removed during broker retry due to TRADE_RETCODE_INVALID_STOPS"
+                            response = await self.engine.open_trade(user, trade)
+
+                    if not response:
+                        from app.utils.metrics import execution_failures_total
+                        execution_failures_total.labels(reason="no_response_from_engine").inc()
+                        logger.warning(f"Trade skipped for user {user.id} (no response from engine)")
+                        failure_count += 1
+                        continue
+
+                    engine_status = response.get("status")
+                    
+                    # ── Evaluate True Execution Success ──
+                    is_execute_success = False
+                    meta_result = {}
+                    pos_id = None
+                    reject_reason = response.get("reason") or engine_status
+                    
+                    if engine_status == "success":
+                        meta_result = response.get("result", {})
+                        string_code = meta_result.get("stringCode", "UNKNOWN")
+                        pos_id = meta_result.get("positionId") or meta_result.get("orderId")
+                        
+                        # 10009 = DONE, 10008 = PLACED
+                        if string_code in ["TRADE_RETCODE_DONE", "TRADE_RETCODE_PLACED"] and pos_id:
+                            is_execute_success = True
+                        else:
+                            reject_reason = f"Broker Rejected: {string_code} - {meta_result.get('message', 'No details')}"
+
+                    elif engine_status == "rejected":
+                        meta_result = response.get("result", {})
+                        string_code = meta_result.get("stringCode")
+                        if string_code:
+                            reject_reason = f"Broker Rejected: {string_code} - {meta_result.get('message', 'No details')}"
+
+                    if is_execute_success:
                         from app.utils.metrics import successful_trades_total
                         successful_trades_total.labels(symbol=trade["symbol"]).inc()
 
@@ -122,13 +262,54 @@ class TradeManager:
                         if not current_trades:
                             redis_client.expire(daily_limit_key, 86400) # Expiry in 24 hours
                         
-                        # MetaApi typically returns orderId and positionId
+                        # --- NEW: Immediate Trade Logging (Execution Flow) ---
+                        from app.models.trade import Trade
+                        from datetime import datetime, timezone
+
+                        signal_time_str = signal.get("signal_time")
+                        signal_time = None
+                        if signal_time_str:
+                            try:
+                                signal_time = datetime.fromisoformat(signal_time_str)
+                            except Exception:
+                                pass
+                                
+                        execution_time_str = meta_result.get("time_done") or meta_result.get("time") 
+                        if execution_time_str:
+                            try:
+                                execution_time = datetime.fromisoformat(execution_time_str.replace("Z", "+00:00"))
+                            except Exception:
+                                execution_time = datetime.now(timezone.utc)
+                        else:
+                            execution_time = datetime.now(timezone.utc)
+
+                        latency_ms = None
+                        if signal_time:
+                            latency_ms = int((execution_time - signal_time).total_seconds() * 1000)
+
+                        new_trade = Trade(
+                            id=pos_id,
+                            user_id=user.id,
+                            signal_id=signal_id,
+                            bot_id=bot_id,
+                            symbol=trade["symbol"],
+                            side=trade["side"],
+                            entry=trade["entry"],
+                            lot_size=trade.get("volume"),
+                            execution_time=execution_time,
+                            execution_latency_ms=latency_ms,
+                            status="EXECUTED",
+                            result="OPEN",
+                            metaapi_trade_id=pos_id
+                        )
+                        db.add(new_trade)
+
                         # Create the tracking record for the DB
                         from app.services.position_tracker import PositionTracker
                         tracker = PositionTracker()
                         
                         trade_data = {
-                            "id": response.get("positionId") or response.get("orderId") or str(__import__("uuid").uuid4()),
+                            "id": pos_id,
                             "user_id": user.id,
                             "bot_id": bot_id, # Track bot attribution
                             "symbol": trade["symbol"],
@@ -146,7 +327,7 @@ class TradeManager:
                         ts = TradeState(
                             user_id=user.id,
                             symbol=trade["symbol"],
-                            position_id=trade_data["id"], # Direct link to position record
+                            position_id=pos_id, # Direct link to position record
                             bot_slug=signal.get("strategy_slug", "unknown"),
                             entry_price=trade["entry"],
                             sl_price=trade["sl"],
@@ -158,14 +339,38 @@ class TradeManager:
                         db.add(ts)
                         db.commit()
                         
-                        logger.info(f"Position and TradeState saved to db for user {user.id}")
+                        logger.info(f"Position, Trade(EXECUTED) and TradeState saved to db for user {user.id}")
                         success_count += 1
                     else:
                         from app.utils.metrics import execution_failures_total
-                        execution_failures_total.labels(reason="no_response_from_engine").inc()
+                        execution_failures_total.labels(reason="rejected_or_skipped").inc()
 
-                        # Trade was skipped or rejected by the engine (e.g. no EA token)
-                        logger.warning(f"Trade skipped for user {user.id} (no response from engine)")
+                        logger.warning(f"Trade Execution FAILED for user {user.id}. Reason: {reject_reason}")
+                        
+                        # Log EXECUTION_FAILED to DB so user can see what happened
+                        from app.models.trade import Trade
+                        from datetime import datetime, timezone
+                        
+                        failed_id = str(__import__("uuid").uuid4())
+                        new_trade = Trade(
+                            id=failed_id,
+                            user_id=user.id,
+                            signal_id=signal_id,
+                            bot_id=bot_id,
+                            symbol=trade["symbol"],
+                            side=trade["side"],
+                            entry=trade["entry"],
+                            lot_size=trade.get("volume"),
+                            execution_time=datetime.now(timezone.utc),
+                            execution_latency_ms=None,
+                            status="EXECUTION_FAILED",
+                            result="FAILED",
+                            metaapi_trade_id=None,
+                            reject_reason=reject_reason
+                        )
+                        db.add(new_trade)
+                        db.commit()
+                        
                         failure_count += 1
 
                 except Exception as e:

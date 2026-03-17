@@ -21,18 +21,21 @@ def get_unified_trades(user_id: str, db: Session):
     """
     unified_trades = []
 
-    # 1. Legacy closed trades from 'trades' table
     legacy_trades = db.query(Trade).filter(Trade.user_id == user_id).all()
     for t in legacy_trades:
         pnl = float(t.pnl or 0)
         result = t.result
-        if not result:
+        status = t.status or "closed"
+
+        if not result and status.lower() in ["closed", "tp_hit", "stopped", "success"]:
             if pnl > 0:
                 result = "WIN"
             elif pnl < 0:
                 result = "LOSS"
             else:
                 result = "BE"
+
+        time_val = t.execution_time or t.created_at
 
         unified_trades.append({
             "id": t.id,
@@ -41,11 +44,16 @@ def get_unified_trades(user_id: str, db: Session):
             "entry_price": t.entry,
             "exit_price": t.exit,
             "pnl": pnl,
-            "result": result,
-            "volume": 0.01,
-            "created_at": t.created_at, # Keep as datetime object for sorting later
-            "status": "closed",
-            "source": "legacy_trade"
+            "result": result or "OPEN",
+            "volume": t.lot_size or 0.01,
+            "created_at": time_val, # For sorting
+            "execution_time": t.execution_time.isoformat() if t.execution_time else None,
+            "close_time": t.close_time.isoformat() if t.close_time else None,
+            "execution_latency_ms": t.execution_latency_ms,
+            "signal_time": t.signal.signal_time.isoformat() if hasattr(t, "signal") and t.signal and t.signal.signal_time else None,
+            "status": status.lower(),
+            "source": "database_trade",
+            "reject_reason": getattr(t, "reject_reason", None)
         })
 
     # 2. Bot-executed positions from the 'positions' table
@@ -87,7 +95,8 @@ def get_unified_trades(user_id: str, db: Session):
             "volume": 0.01,
             "created_at": time_val, # Keep as datetime object for sorting
             "status": status,
-            "source": "bot_position"
+            "source": "bot_position",
+            "reject_reason": None
         })
         
     # Sort chronologically (newest first for most lists, oldest first for equity curve)

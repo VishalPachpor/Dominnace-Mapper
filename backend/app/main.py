@@ -15,6 +15,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("DominanceBot API Starting up...")
 
+
+def build_cors_config():
+    allow_origins = [
+        "http://localhost",
+        "http://localhost:3000",
+        "http://127.0.0.1",
+        "http://127.0.0.1:3000",
+    ]
+    allow_origin_regex = None
+
+    raw_frontend_url = (FRONTEND_URL or "").strip()
+    if raw_frontend_url == "*":
+        # Fly previously used "*" here. With credentialed requests we need the
+        # middleware to echo the caller origin instead of sending a wildcard.
+        allow_origin_regex = r"https?://.*"
+    elif raw_frontend_url:
+        for origin in [item.strip() for item in raw_frontend_url.split(",") if item.strip()]:
+            if origin not in allow_origins:
+                allow_origins.append(origin)
+
+    return allow_origins, allow_origin_regex
+
 app = FastAPI(
     title="DominanceBot API",
     description="Trading SaaS Platform API",
@@ -22,15 +44,11 @@ app = FastAPI(
 )
 
 # Critical Fix #4 — CORS so the Next.js frontend can reach the API
+allow_origins, allow_origin_regex = build_cors_config()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost",
-        "http://localhost:3000",
-        "http://127.0.0.1",
-        "http://127.0.0.1:3000",
-        FRONTEND_URL,
-    ],
+    allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

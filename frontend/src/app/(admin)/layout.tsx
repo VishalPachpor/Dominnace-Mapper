@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import AdminSidebar from "@/components/AdminSidebar";
 import Topbar from "@/components/Topbar";
+import api from "@/services/api";
 
 export default function AdminLayout({
     children,
@@ -15,19 +16,23 @@ export default function AdminLayout({
     const router = useRouter();
 
     useEffect(() => {
-        // Simple client-side check, backend will handle real enforcement
         const token = localStorage.getItem("token");
         if (!token) {
             router.push("/login");
             return;
         }
 
-        try {
-            // We'll trust the token for UI rendering, backend protects the data
-            setIsAuthorized(true);
-        } catch {
-            router.push("/login");
-        }
+        api.get("/users/me")
+            .then(() => setIsAuthorized(true))
+            .catch((err: unknown) => {
+                const status = (err as { response?: { status?: number } })?.response?.status;
+                if (status === 401) {
+                    localStorage.removeItem("token");
+                    router.push("/login");
+                    return;
+                }
+                setIsAuthorized(true);
+            });
     }, [router]);
 
     if (!isAuthorized) {
