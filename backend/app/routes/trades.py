@@ -5,6 +5,7 @@ from app.utils.subscription_check import check_subscription_active
 from app.models.user import User
 from app.models.trade import Trade
 from app.models.position import Position
+from app.models.trade_state import TradeState
 from app.database.db import get_db
 from app.utils.security import get_current_user
 import ccxt
@@ -20,12 +21,38 @@ def get_unified_trades(user_id: str, db: Session):
     Normalizes legacy Trade records and modern Position records into a unified structure.
     """
     unified_trades = []
+    state_rows = db.query(TradeState).filter(TradeState.user_id == user_id).all()
+    state_by_position_id = {
+        str(s.position_id): s
+        for s in state_rows
+        if s.position_id
+    }
+
+    def apply_state_authority(record_id: str, status: str, result: str | None):
+        state = state_by_position_id.get(str(record_id))
+        normalized_status = (status or "closed").lower()
+        normalized_result = result
+
+        if not state:
+            return normalized_status, normalized_result
+
+        state_status = (state.status or "").upper()
+        if state_status in ["CLOSED", "REVERSED"]:
+            normalized_status = "closed"
+            if state_status == "REVERSED":
+                normalized_result = normalized_result or "LOSS"
+        elif state_status in ["OPEN", "BE_MOVED"]:
+            normalized_status = "open"
+            normalized_result = "OPEN"
+
+        return normalized_status, normalized_result
 
     legacy_trades = db.query(Trade).filter(Trade.user_id == user_id).all()
     for t in legacy_trades:
         pnl = float(t.pnl or 0)
         result = t.result
         status = t.status or "closed"
+        status, result = apply_state_authority(t.id, status, result)
 
         if not result and status.lower() in ["closed", "tp_hit", "stopped", "success"]:
             if pnl > 0:
@@ -66,17 +93,19 @@ def get_unified_trades(user_id: str, db: Session):
     for p in bot_positions:
         pnl = float(p.pnl or 0)
         status = (p.status or "open").lower()
+        status, result = apply_state_authority(p.id, status, None)
         
         # Calculate WIN/LOSS/BE for closed positions
-        result = "OPEN"
-        if status in ["closed", "tp_hit", "stopped", "success"]:
+        if status == "open":
+            result = "OPEN"
+        elif status in ["closed", "tp_hit", "stopped", "success"]:
             status = "closed"
             if pnl > 0:
                 result = "WIN"
             elif pnl < 0:
                 result = "LOSS"
             else:
-                result = "BE"
+                result = result or "BE"
 
         # Use closed_at if available for chronological sorting, fallback to created_at
         time_val = p.closed_at if p.closed_at else p.created_at

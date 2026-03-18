@@ -61,8 +61,11 @@ class ExecutionEngine:
 
             # ── Guard 2: Duplicate position check ─────────────────────────────
             from app.services.metaapi_service import has_open_position, execute_trade
-            if await has_open_position(meta_account_id, symbol, side=side):
-                logger.info(f"Duplicate guard: skipping {symbol} — position already open.")
+            # For DOM automation we only want one live position per symbol at a time.
+            # Reversal trades are opened only after the previous position is closed,
+            # so a symbol-level guard is still compatible with reversal logic.
+            if await has_open_position(meta_account_id, symbol):
+                logger.info(f"Duplicate guard: skipping {symbol} — another live position already exists.")
                 return {"status": "skipped", "reason": "duplicate_position"}
 
             # ── Execute via MetaApi ───────────────────────────────────────────
