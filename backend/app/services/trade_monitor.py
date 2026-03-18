@@ -40,10 +40,18 @@ class TradeMonitorService:
         # 1. Check if position still exists on MetaApi
         try:
             positions = await self.engine.get_positions(user.meta_account_id)
-            # Find matching position by symbol and side (rough check, could be improved with ticket ID if we stored it)
-            # In Phase 1 we started saving positionId in TradeState if possible, but for now we match by symbol/side
-            # to be safe across different broker behaviors.
-            matching_pos = next((p for p in positions if p["symbol"] == state.symbol and p["type"].lower() == state.side.lower()), None)
+            # Guard against positions dicts missing 'symbol' (e.g. pending orders from MetaApi)
+            if state.position_id:
+                matching_pos = next(
+                    (p for p in positions if str(p.get("id")) == str(state.position_id)),
+                    None
+                )
+            else:
+                matching_pos = next(
+                    (p for p in positions
+                     if p.get("symbol") == state.symbol and (p.get("type") or "").lower() == state.side.lower()),
+                    None
+                )
             
             if not matching_pos:
                 # Position is closed. Check if it was a loss for reversal.
@@ -75,32 +83,42 @@ class TradeMonitorService:
         Handles a closed position. If it closed at SL and is a DOM trade, trigger reversal.
         """
         logger.info(f"Trade {state.id} ({state.symbol}) detected as CLOSED.")
-        
+
         # Check history to see if it was a Loss (SL hit)
-        # For simplicity in this version, if it's closed and reversal_used is False, 
-        # we check if price was near SL or if we can get the last deal.
-        # But per requirements: "If trade closes in LOSS (SL hit), immediately fire reversal".
-        
-        # Logic to determine if SL hit:
-        # We can look up the last deal for this symbol in the last hour.
-        deals = await self.engine.get_deals(user.meta_account_id, limit=5)
-        last_deal = next((d for d in deals if d["symbol"] == state.symbol and d["entryType"] == "DEAL_ENTRY_OUT"), None)
+        deals = await self.engine.get_deals(user.meta_account_id, limit=20)
+        last_deal = next(
+            (d for d in deals
+             if d.get("entryType") == "DEAL_ENTRY_OUT"
+             and str(d.get("positionId")) == str(state.position_id)),
+            None,
+        )
+
+        if not last_deal:
+            # MetaApi may lag; don't mark closed until we see a closing deal
+            logger.warning(
+                f"Position {state.position_id} not found in open positions, but no closing deal yet. "
+                f"Deferring close sync for {state.symbol}."
+            )
+            return
+
+        # Now safe to mark CLOSED
+        state.status = "CLOSED"
+        db.commit()
         
         is_loss = False
         exit_price = None
         pnl = 0.0
         closed_at = None
-        if last_deal:
-            exit_price = float(last_deal.get("price", 0))
-            pnl = float(last_deal.get("profit", 0))
-            is_loss = pnl < 0
-            # Capture the actual finish time from the deal
-            deal_time = last_deal.get("time")
-            if deal_time:
-                try:
-                    closed_at = datetime.fromisoformat(deal_time.replace("Z", "+00:00"))
-                except Exception:
-                    closed_at = datetime.utcnow()
+        exit_price = float(last_deal.get("price", 0))
+        pnl = float(last_deal.get("profit", 0))
+        is_loss = pnl < 0
+        # Capture the actual finish time from the deal
+        deal_time = last_deal.get("time")
+        if deal_time:
+            try:
+                closed_at = datetime.fromisoformat(deal_time.replace("Z", "+00:00"))
+            except Exception:
+                closed_at = datetime.utcnow()
         
         # Sync back to Position table for reporting
         if state.position_id:
@@ -126,16 +144,12 @@ class TradeMonitorService:
                 AnalyticsService.update_trade_metrics(db, state.bot_slug, pnl)
         
         if is_loss and not state.reversal_used:
-            # TRIGGER REVERSAL
-            # Only for DOM trades (determined by bot_slug)
-            if state.bot_slug in ["dm-bull", "dm-bear", "dominance-bull", "dominance-bear"]:
+            # TRIGGER REVERSAL — only for DOM trades
+            if state.bot_slug in ["dm-bull", "dm-bear", "dominance-bull", "dominance-bear", "dominance_crypto"]:
                 await self._trigger_reversal(db, state, user)
                 state.status = "REVERSED"
-            else:
-                state.status = "CLOSED"
-        else:
-            state.status = "CLOSED"
-        
+            # else: already CLOSED from the early commit above
+
         db.commit()
 
     async def _trigger_reversal(self, db, state: TradeState, user: User):
@@ -183,31 +197,106 @@ class TradeMonitorService:
             sl = dom_low
             tp = dom_high + dom_length
 
+        # Best-effort: reuse original trade volume when available.
+        reverse_volume = 0.01
+        try:
+            from app.models.trade import Trade
+            original_trade = db.query(Trade).filter(Trade.id == state.position_id).first()
+            if original_trade and original_trade.lot_size:
+                reverse_volume = float(original_trade.lot_size)
+        except Exception:
+            pass
+
         reverse_trade = {
             "symbol": state.symbol,
             "side": reverse_side,
-            "entry": 0, # Market execution
+            "entry": 0, # Market execution (we will fill actual entry from MetaApi positions)
             "sl": sl,
             "tp": tp,
-            "be_trigger": sl + (dom_length * 0.35) if reverse_side == "buy" else sl - (dom_length * 0.35),
-            "volume": 0.01, # Should be the same as original? We could track it.
+            "be_trigger": 0,
+            "volume": reverse_volume,
         }
         
         # Attempt to open
         response = await self.engine.open_trade(user, reverse_trade)
-        if response:
+        if response and response.get("status") == "success":
+            meta_result = response.get("result", {}) or {}
+            string_code = meta_result.get("stringCode")
+            pos_id = meta_result.get("positionId") or meta_result.get("orderId")
+            if string_code not in ["TRADE_RETCODE_DONE", "TRADE_RETCODE_PLACED"] or not pos_id:
+                logger.warning(f"Reversal rejected/unknown result: {string_code} {meta_result}")
+                return
+
+            # Fetch the opened position to capture real entry price (needed for BE logic)
+            entry_price = None
+            try:
+                positions = await self.engine.get_positions(user.meta_account_id)
+                match = next((p for p in positions if str(p.get("id")) == str(pos_id)), None)
+                if not match:
+                    match = next(
+                        (p for p in positions
+                         if p.get("symbol") == state.symbol and (p.get("type") or "").lower() == reverse_side.lower()),
+                        None
+                    )
+                if match:
+                    entry_price = float(match.get("openPrice") or match.get("price") or match.get("currentPrice") or 0)
+            except Exception as e:
+                logger.warning(f"Failed to fetch reversal position entry price: {e}")
+
+            if not entry_price:
+                entry_price = state.entry_price
+
+            be_trigger = entry_price + (dom_length * 0.35) if reverse_side == "buy" else entry_price - (dom_length * 0.35)
+
             # Mark original as reversal_used
             state.reversal_used = True
-            
+
+            # Record reversal position/trade so UI + monitor can track it
+            try:
+                from app.services.position_tracker import PositionTracker
+                PositionTracker().save_position({
+                    "id": pos_id,
+                    "user_id": user.id,
+                    "symbol": state.symbol,
+                    "side": reverse_side,
+                    "entry": entry_price,
+                    "sl": sl,
+                    "tp": tp,
+                    "be_trigger": be_trigger,
+                    "is_reversal": True,
+                    "status": "OPEN",
+                })
+
+                from app.models.trade import Trade
+                from datetime import timezone
+                db.add(Trade(
+                    id=pos_id,
+                    user_id=user.id,
+                    signal_id=None,
+                    bot_id=None,
+                    symbol=state.symbol,
+                    side=reverse_side,
+                    entry=entry_price,
+                    lot_size=reverse_volume,
+                    execution_time=datetime.now(timezone.utc),
+                    status="EXECUTED",
+                    result="OPEN",
+                    metaapi_trade_id=pos_id,
+                ))
+            except Exception as e:
+                logger.warning(f"Failed to persist reversal Trade/Position: {e}")
+
+            # Mark original as reversal_used
             # Create NEW TradeState for the reversal
             ts = TradeState(
                 user_id=user.id,
                 symbol=state.symbol,
+                position_id=pos_id,
                 bot_slug=state.bot_slug,
-                entry_price=reverse_trade["entry"], # Will be updated by execution engine/monitor later
+                entry_price=entry_price,
                 sl_price=reverse_trade["sl"],
                 tp_price=reverse_trade["tp"],
-                be_trigger=reverse_trade["be_trigger"],
+                be_trigger=be_trigger,
                 side=reverse_trade["side"],
                 status="OPEN",
                 reversal_used=True # Reversal can only happen once

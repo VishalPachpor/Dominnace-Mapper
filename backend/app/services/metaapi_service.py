@@ -362,13 +362,42 @@ async def get_open_positions(account_id: str) -> list:
     return []
 
 
-async def has_open_position(account_id: str, symbol: str) -> bool:
-    """Returns True if the user already has an open position in this symbol."""
+def _normalize_pos_side(raw_type) -> str | None:
+    """
+    MetaApi position payloads can vary by broker/account:
+    - "buy"/"sell"
+    - "POSITION_TYPE_BUY"/"POSITION_TYPE_SELL"
+    - sometimes numeric enums
+    We normalize to "buy"/"sell" when possible.
+    """
+    if raw_type is None:
+        return None
+    s = str(raw_type).lower()
+    if "buy" in s:
+        return "buy"
+    if "sell" in s:
+        return "sell"
+    return None
+
+
+async def has_open_position(account_id: str, symbol: str, side: Optional[str] = None) -> bool:
+    """
+    Returns True if the user already has an open position in this symbol.
+
+    If side is provided, only returns True for an *existing position on the same side*.
+    This prevents same-side stacking while still allowing an opposite-side order
+    to close/net/hedge depending on the broker account mode.
+    """
     canonical = resolve_symbol(symbol)
+    want_side = side.lower() if side else None
     positions = await get_open_positions(account_id)
     for pos in positions:
         pos_symbol = resolve_symbol(pos.get("symbol", ""))
         if pos_symbol.upper() == canonical.upper():
+            if want_side:
+                existing_side = _normalize_pos_side(pos.get("type"))
+                if existing_side and existing_side != want_side:
+                    continue
             logger.info(f"Duplicate guard: position already open for {symbol} on account {account_id}")
             return True
     return False

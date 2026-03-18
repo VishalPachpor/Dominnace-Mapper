@@ -42,7 +42,40 @@ export default function TradeHistoryPage() {
     const fetchTrades = useCallback(async () => {
         try {
             const res = await api.get("/trades");
-            setTrades(Array.isArray(res.data) ? res.data : []);
+            const raw: Trade[] = Array.isArray(res.data) ? res.data : [];
+            // Deduplicate by id — prefer OPEN + live broker records when duplicates exist.
+            const statusRank = (status?: string) => (status || "").toLowerCase() === "open" ? 2 : 1;
+            const sourceRank = (source?: string) => {
+                const order: Record<string, number> = {
+                    metaapi_live: 4,
+                    bot_position: 3,
+                    database_trade: 2,
+                    metaapi_history: 1,
+                };
+                return order[source || ""] || 0;
+            };
+            const map = new Map<string, Trade>();
+            const passthrough: Trade[] = [];
+            for (const t of raw) {
+                if (!t.id) {
+                    passthrough.push(t);
+                    continue;
+                }
+                const key = String(t.id);
+                const existing = map.get(key);
+                if (!existing) {
+                    map.set(key, t);
+                    continue;
+                }
+                if (
+                    statusRank(t.status) > statusRank(existing.status) ||
+                    (statusRank(t.status) === statusRank(existing.status) &&
+                        sourceRank(t.source) > sourceRank(existing.source))
+                ) {
+                    map.set(key, t);
+                }
+            }
+            setTrades([...map.values(), ...passthrough]);
         } catch {
             // silently fail
         } finally {

@@ -19,10 +19,18 @@ def list_trades(db: Session = Depends(get_db), admin: User = Depends(require_adm
     trades = db.query(Position, User.email)\
         .join(User, Position.user_id == User.id)\
         .order_by(Position.created_at.desc())\
-        .limit(100).all()
+        .limit(200).all()
         
     results = []
     for pos, email in trades:
+        raw_status = (pos.status or "").lower()
+        # Normalize to UI-friendly open/closed labels
+        if raw_status in ["open", "executed", "pending_ea", "picked_up"]:
+            status = "open"
+        elif raw_status in ["closed", "tp_hit", "stopped", "success"]:
+            status = "closed"
+        else:
+            status = raw_status or "open"
         results.append({
             "id": pos.id,
             "user": email,
@@ -31,7 +39,7 @@ def list_trades(db: Session = Depends(get_db), admin: User = Depends(require_adm
             "entry_price": pos.entry,
             "exit_price": pos.exit_price,
             "pnl": pos.pnl,
-            "status": pos.status,
+            "status": status,
             "created_at": pos.created_at
         })
     return results

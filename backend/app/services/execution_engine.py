@@ -61,7 +61,7 @@ class ExecutionEngine:
 
             # ── Guard 2: Duplicate position check ─────────────────────────────
             from app.services.metaapi_service import has_open_position, execute_trade
-            if await has_open_position(meta_account_id, symbol):
+            if await has_open_position(meta_account_id, symbol, side=side):
                 logger.info(f"Duplicate guard: skipping {symbol} — position already open.")
                 return {"status": "skipped", "reason": "duplicate_position"}
 

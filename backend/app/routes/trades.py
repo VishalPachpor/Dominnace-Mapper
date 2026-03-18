@@ -128,11 +128,23 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
             
             # Fetch Live Open Positions
             positions = await get_open_positions(meta_account_id)
-            existing_ids = {str(r["id"]) for r in result_list}
+            existing_by_id = {str(r["id"]): r for r in result_list if r.get("id") is not None}
             
             for p in positions:
                 pos_id = str(p.get("id", ""))
-                if pos_id in existing_ids:
+                if pos_id in existing_by_id:
+                    # MetaApi is source of truth for OPEN positions
+                    row = existing_by_id[pos_id]
+                    side_raw = p.get("type", "")
+                    side = "buy" if "BUY" in side_raw.upper() else "sell"
+                    row["status"] = "open"
+                    row["result"] = "OPEN"
+                    row["source"] = "metaapi_live"
+                    row["symbol"] = row.get("symbol") or p.get("symbol", "")
+                    row["side"] = row.get("side") or side
+                    row["entry_price"] = row.get("entry_price") or p.get("openPrice", 0)
+                    row["current_price"] = p.get("currentPrice", 0)
+                    row["pnl"] = p.get("profit", row.get("pnl", 0))
                     continue
                 side_raw = p.get("type", "")
                 side = "buy" if "BUY" in side_raw.upper() else "sell"
@@ -207,6 +219,39 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
 
         except Exception as e:
             logger.error(f"Failed to fetch MetaApi data for trades list: {e}")
+
+    # --- De-duplicate by id with a preference for OPEN + live broker records ---
+    def _status_rank(status: str) -> int:
+        s = (status or "").lower()
+        return 2 if s == "open" else 1
+
+    def _source_rank(source: str) -> int:
+        src = source or ""
+        # Prefer live broker data, then DB positions, then legacy trades, then broker history
+        order = {
+            "metaapi_live": 4,
+            "bot_position": 3,
+            "database_trade": 2,
+            "metaapi_history": 1,
+        }
+        return order.get(src, 0)
+
+    deduped = {}
+    for row in result_list:
+        rid = str(row.get("id", ""))
+        if not rid:
+            continue
+        if rid not in deduped:
+            deduped[rid] = row
+            continue
+        existing = deduped[rid]
+        if (_status_rank(row.get("status")) > _status_rank(existing.get("status")) or
+            (_status_rank(row.get("status")) == _status_rank(existing.get("status")) and
+             _source_rank(row.get("source")) > _source_rank(existing.get("source")))):
+            deduped[rid] = row
+
+    # If we somehow dropped items with empty ids, re-add them.
+    result_list = list(deduped.values()) + [r for r in result_list if not r.get("id")]
 
     # Re-sort everything chronologically newest first
     from datetime import timezone
@@ -433,5 +478,3 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
         "daily_pnl": round(daily_pnl, 2),
         "equity_curve": equity_data[-30:]
     }
-
-

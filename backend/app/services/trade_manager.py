@@ -164,7 +164,21 @@ class TradeManager:
                     adapted_order = None
                     try:
                         if user.meta_account_id:
-                            adapted_order = await adapt_order(signal, user.meta_account_id)
+                            # If TradingView doesn't send explicit stops, preserve the DOM-derived
+                            # SL/TP we computed in create_trade() so we don't execute unprotected.
+                            adapter_signal = dict(signal)
+                            if not adapter_signal.get("sl") and trade.get("sl"):
+                                adapter_signal["sl"] = trade.get("sl")
+                            if not adapter_signal.get("tp") and trade.get("tp"):
+                                adapter_signal["tp"] = trade.get("tp")
+                            # Ensure entry/side/symbol are aligned with the trade dict (create_trade
+                            # normalizes BTCUSDT -> BTCUSD, etc.)
+                            adapter_signal["entry"] = trade.get("entry")
+                            adapter_signal["price"] = trade.get("entry")
+                            adapter_signal["side"] = trade.get("side")
+                            adapter_signal["symbol"] = trade.get("symbol")
+
+                            adapted_order = await adapt_order(adapter_signal, user.meta_account_id)
                             # Merge adapted values back into trade dict so engine uses them
                             trade["symbol"]  = adapted_order.get("symbol", trade["symbol"])
                             trade["volume"]  = adapted_order.get("volume", trade.get("volume"))
@@ -318,17 +332,30 @@ class TradeManager:
                             "sl": trade["sl"],
                             "tp": trade["tp"],
                             "be_trigger": trade["be_trigger"],
-                            "status": response.get("status", "OPEN")
+                            # Normalize execution status to Position lifecycle states.
+                            # Using "success" here makes the UI treat the position as "closed".
+                            "status": "OPEN"
                         }
                         tracker.save_position(trade_data)
                         
                         # Persistent state for Reversal/BE logic (Advanced engine)
                         from app.models.trade_state import TradeState
+                        # Store the real bot slug so the monitor can apply DOM reversal rules.
+                        # TradingView payload usually includes "bot": "dm-bull".
+                        bot_slug = signal.get("bot") or signal.get("bot_slug")
+                        if not bot_slug and bot_id:
+                            try:
+                                from app.models.bot import Bot
+                                bot_row = db.query(Bot).filter(Bot.id == bot_id).first()
+                                bot_slug = bot_row.slug if bot_row else None
+                            except Exception:
+                                bot_slug = None
+
                         ts = TradeState(
                             user_id=user.id,
                             symbol=trade["symbol"],
                             position_id=pos_id, # Direct link to position record
-                            bot_slug=signal.get("strategy_slug", "unknown"),
+                            bot_slug=bot_slug or "unknown",
                             entry_price=trade["entry"],
                             sl_price=trade["sl"],
                             tp_price=trade["tp"],

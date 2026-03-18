@@ -4,18 +4,21 @@ const FALLBACK_LOCAL_API_URL = "http://127.0.0.1:8000";
 const rawApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
 
 function resolveApiBaseUrl() {
-    if (typeof window !== "undefined") {
-        const host = window.location.hostname;
-        const isLocalDevHost = host === "localhost" || host === "127.0.0.1";
+    // If an explicit API URL is configured, always use it (even on localhost).
+    if (rawApiUrl) return rawApiUrl;
 
-        // When we are developing locally, prefer the local FastAPI server even if
-        // an old Fly URL is still sitting in the frontend env file.
-        if (isLocalDevHost) {
+    if (typeof window !== "undefined") {
+        const { hostname, port, origin } = window.location;
+        const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1";
+        if (isLocalhost || port === "3000" || port === "5173") {
             return FALLBACK_LOCAL_API_URL;
         }
+        // In production, prefer same-origin API to avoid network errors.
+        return origin;
     }
 
-    return rawApiUrl || FALLBACK_LOCAL_API_URL;
+    // No env var set and no window — fall back to local dev server.
+    return FALLBACK_LOCAL_API_URL;
 }
 
 const api = axios.create({
