@@ -129,6 +129,7 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
             # Fetch Live Open Positions
             positions = await get_open_positions(meta_account_id)
             existing_by_id = {str(r["id"]): r for r in result_list if r.get("id") is not None}
+            live_ids = {str(p.get("id", "")) for p in positions if p.get("id") is not None}
             
             for p in positions:
                 pos_id = str(p.get("id", ""))
@@ -185,7 +186,8 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
                 # MetaApi usually groups by positionId. If we have a positionId, use that to avoid duplicates.
                 pos_id = str(d.get("positionId", deal_id))
                 
-                if pos_id in updated_existing_ids or deal_id in updated_existing_ids:
+                if pos_id in live_ids:
+                    # Broker says it's still OPEN; never mark closed from history.
                     continue
                 
                 commission = float(d.get("commission", 0))
@@ -198,6 +200,26 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
                 result = "BE"
                 if pnl > 0: result = "WIN"
                 elif pnl < 0: result = "LOSS"
+
+                if pos_id in updated_existing_ids:
+                    # Patch existing DB/open row with close info from broker history
+                    row = existing_by_id.get(pos_id)
+                    if row:
+                        row["exit_price"] = d.get("price", 0)
+                        row["pnl"] = round(pnl, 2)
+                        row["result"] = result
+                        row["status"] = "closed"
+                        row["source"] = row.get("source") or "metaapi_history"
+                        row["commission"] = round(commission, 2)
+                        row["swap"] = round(swap, 2)
+                        row["deal_id"] = deal_id
+                        row["broker_time"] = d.get("brokerTime")
+                        if not row.get("entry_price"):
+                            row["entry_price"] = entry_map.get(pos_id)
+                    continue
+
+                if deal_id in updated_existing_ids:
+                    continue
 
                 result_list.append({
                     "id": pos_id, 
