@@ -10,6 +10,33 @@ from app.utils.security import get_current_user
 
 router = APIRouter()
 
+DOMINANCE_STRATEGY_SLUGS = {
+    "dm-bull",
+    "dm-bear",
+    "dominance-bull",
+    "dominance-bear",
+    "dominance_crypto",
+    "dominance",
+    "dom",
+}
+
+
+def _normalize_strategy_identity(bot_slug: str | None, bot_name: str | None = None) -> tuple[str, str]:
+    slug = (bot_slug or "").strip().lower()
+    name = (bot_name or "").strip()
+
+    if (
+        slug in DOMINANCE_STRATEGY_SLUGS
+        or slug.startswith("dm-")
+        or slug.startswith("dominance")
+        or "dominance" in name.lower()
+    ):
+        return "dominance-mapper", "Dominance Mapper"
+
+    normalized_slug = slug or "unknown-strategy"
+    normalized_name = name or normalized_slug.replace("-", " ").replace("_", " ").title()
+    return normalized_slug, normalized_name
+
 
 def require_admin(user: User = Depends(get_current_user)):
     if not user.is_admin:
@@ -53,23 +80,60 @@ def get_strategy_stats(db: Session = Depends(get_db), admin: User = Depends(requ
         if pos:
             live_map[state.bot_slug]["running_pnl"] += pos.unrealized_pnl or 0.0
 
-    # 4. Merge into unified response
-    result = []
-    for bot in bots:
-        s = stats_map.get(bot.slug)
-        live = live_map.get(bot.slug, {"open_trades": 0, "running_pnl": 0.0})
+    # 4. Merge into unified response.
+    # Use bots as the preferred catalog, but fall back to live/stats slugs so
+    # strategies still appear even if the bots table is stale or missing rows.
+    grouped_result = {}
+    bot_by_slug = {bot.slug: bot for bot in bots}
+    discovered_slugs = set(bot_by_slug.keys()) | set(stats_map.keys()) | set(live_map.keys())
 
-        result.append({
-            "bot_slug": bot.slug,
-            "bot_name": bot.name,
-            "is_active": bot.is_active,
-            "total_trades": s.total_trades if s else 0,
-            "wins": s.wins if s else 0,
-            "losses": s.losses if s else 0,
-            "total_pnl": s.total_pnl if s else 0.0,
-            "open_trades": live["open_trades"],
-            "running_pnl": round(live["running_pnl"], 2),
-            "last_updated": s.last_updated.isoformat() if s and s.last_updated else None,
+    for raw_slug in discovered_slugs:
+        bot = bot_by_slug.get(raw_slug)
+        strategy_slug, strategy_name = _normalize_strategy_identity(raw_slug, bot.name if bot else None)
+        bucket = grouped_result.setdefault(strategy_slug, {
+            "bot_slug": strategy_slug,
+            "bot_name": strategy_name,
+            "is_active": False,
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pnl": 0.0,
+            "open_trades": 0,
+            "running_pnl": 0.0,
+            "last_updated_dt": None,
         })
 
+        s = stats_map.get(raw_slug)
+        live = live_map.get(raw_slug, {"open_trades": 0, "running_pnl": 0.0})
+
+        source_is_active = bool(bot.is_active) if bot else True
+        bucket["is_active"] = bucket["is_active"] or source_is_active
+        bucket["total_trades"] += int(s.total_trades if s else 0)
+        bucket["wins"] += int(s.wins if s else 0)
+        bucket["losses"] += int(s.losses if s else 0)
+        bucket["total_pnl"] += float(s.total_pnl if s else 0.0)
+        bucket["open_trades"] += int(live["open_trades"])
+        bucket["running_pnl"] += float(live["running_pnl"])
+
+        if s and s.last_updated and (
+            bucket["last_updated_dt"] is None or s.last_updated > bucket["last_updated_dt"]
+        ):
+            bucket["last_updated_dt"] = s.last_updated
+
+    result = []
+    for strategy in grouped_result.values():
+        result.append({
+            "bot_slug": strategy["bot_slug"],
+            "bot_name": strategy["bot_name"],
+            "is_active": strategy["is_active"],
+            "total_trades": strategy["total_trades"],
+            "wins": strategy["wins"],
+            "losses": strategy["losses"],
+            "total_pnl": round(strategy["total_pnl"], 2),
+            "open_trades": strategy["open_trades"],
+            "running_pnl": round(strategy["running_pnl"], 2),
+            "last_updated": strategy["last_updated_dt"].isoformat() if strategy["last_updated_dt"] else None,
+        })
+
+    result.sort(key=lambda item: (item["open_trades"] > 0, item["total_trades"], item["bot_name"]), reverse=True)
     return result
