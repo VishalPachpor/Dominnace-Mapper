@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # STRICT: Raise ExecutionValidationError("INVALID_SL" / "INVALID_TP") instead.
 EXECUTION_MODE = "SAFE"
 
-# Safety cap — never execute more than this lot size regardless of signal
-GLOBAL_MAX_VOLUME = 0.10
+# Safety cap — sourced from central config (env-overridable)
+from app.config import MAX_POSITION_SIZE as GLOBAL_MAX_VOLUME
 
 
 # ─── Step 1: Volume Normalization ─────────────────────────────────────────────

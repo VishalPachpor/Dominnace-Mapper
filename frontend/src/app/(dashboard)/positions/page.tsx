@@ -29,7 +29,7 @@ export default function PositionsPage() {
 
     const fetchPositions = useCallback(async () => {
         try {
-            const res = await api.get("/positions");
+            const res = await api.get("/positions", { params: { _ts: Date.now() } });
             setPositions(Array.isArray(res.data) ? res.data : []);
         } catch {
             // silently fail
@@ -42,6 +42,15 @@ export default function PositionsPage() {
         fetchPositions();
         const interval = setInterval(fetchPositions, 15000);
         return () => clearInterval(interval);
+    }, [fetchPositions]);
+
+    useEffect(() => {
+        const onAccountStatusChanged = () => {
+            setLoading(true);
+            fetchPositions();
+        };
+        window.addEventListener("dm:account-status-changed", onAccountStatusChanged);
+        return () => window.removeEventListener("dm:account-status-changed", onAccountStatusChanged);
     }, [fetchPositions]);
 
     const totalExposure = positions.reduce((s, p) => s + (p.volume || 0.01), 0);
@@ -218,7 +227,7 @@ export default function PositionsPage() {
                 title={
                     confirmTarget === "all"
                         ? "Close All Positions"
-                        : `Close ${confirmTarget && confirmTarget !== "all" ? confirmTarget.symbol : ""} Position`
+                        : `Close ${confirmTarget ? confirmTarget.symbol : ""} Position`
                 }
                 description={
                     confirmTarget === "all"

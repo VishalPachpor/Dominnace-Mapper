@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from sqlalchemy.orm import Session
 from app.models.strategy_stats import StrategyStats
 from app.models.platform_metrics import PlatformMetrics
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class AnalyticsService:
     @staticmethod
-    def update_trade_metrics(db: Session, bot_slug: str, pnl: float):
+    def update_trade_metrics(db: Session, bot_slug: str, pnl: float, autocommit: bool = True):
         """Updates both strategy-specific and platform-wide trade metrics."""
         try:
             # 1. Update Strategy Stats
@@ -17,14 +17,14 @@ class AnalyticsService:
             if not stats:
                 stats = StrategyStats(bot_slug=bot_slug)
                 db.add(stats)
-            
-            stats.total_trades += 1
-            stats.total_pnl += pnl
+
+            stats.total_trades = (stats.total_trades or 0) + 1
+            stats.total_pnl = (stats.total_pnl or 0.0) + pnl
             if pnl > 0:
-                stats.wins += 1
+                stats.wins = (stats.wins or 0) + 1
             elif pnl < 0:
-                stats.losses += 1
-            stats.last_updated = datetime.utcnow()
+                stats.losses = (stats.losses or 0) + 1
+            stats.last_updated = datetime.now(timezone.utc)
 
             # 2. Update Platform Metrics (Daily Snapshot)
             today = date.today()
@@ -37,11 +37,14 @@ class AnalyticsService:
             
             # 3. Update Redis Counters (Today's observability)
             redis_client.incr("trades_today")
-            
-            db.commit()
+
+            if autocommit:
+                db.commit()
+            return True
         except Exception as e:
             logger.error(f"Failed to update analytics: {e}")
             db.rollback()
+            return False
 
     @staticmethod
     def record_signal(db: Session):

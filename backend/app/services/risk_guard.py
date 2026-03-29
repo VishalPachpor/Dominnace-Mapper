@@ -1,16 +1,16 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from app.utils.redis_client import redis_client
 from app.services.metaapi_service import get_open_positions, get_account_information
 from app.utils.metrics import risk_guard_triggers_total
+from app.config import (
+    MAX_OPEN_POSITIONS,
+    MAX_POSITIONS_PER_SYMBOL,
+    MAX_DAILY_DRAWDOWN,
+    MAX_SIGNALS_PER_MINUTE,
+)
 
 logger = logging.getLogger(__name__)
-
-# Configurable Limits
-MAX_OPEN_POSITIONS = 5
-MAX_POSITIONS_PER_SYMBOL = 1
-MAX_DAILY_DRAWDOWN = 0.05 # 5%
-MAX_SIGNALS_PER_MINUTE = 3
 
 class RiskGuardException(Exception):
     def __init__(self, reason, message):
@@ -92,7 +92,7 @@ class RiskGuardService:
             logger.error(f"Error fetching account info for {account_id}: {e}")
             raise RiskGuardException("metaapi_error", "Could not fetch account equity to verify drawdown.")
             
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         start_balance_key = f"start_balance:{account_id}:{today_str}"
         
         # Initialize start balance for today if not present

@@ -3,10 +3,76 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from app.database.db import get_db
 from app.utils.security import get_current_user
+from app.services.trade_closer import force_close_orphaned_trades_for_user
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+async def _refresh_user_mt_state(user, db: Session):
+    """
+    Reconcile the stored user MT status with live MetaApi state so the UI does not
+    trust stale `connected` flags after broker/demo expiry.
+    """
+    meta_account_id = getattr(user, "meta_account_id", None)
+    if not meta_account_id:
+        if user.mt_status != "disconnected" or getattr(user, "can_trade", True):
+            user.mt_status = "disconnected"
+            user.can_trade = False
+            db.commit()
+        return user
+
+    try:
+        from app.services.metaapi_service import get_account_status, get_account_information
+
+        live_status = await get_account_status(meta_account_id, use_cache=False)
+        if live_status in ("CONNECTED", "DEPLOYED"):
+            # Manual safety override: keep users non-tradable when paused.
+            if bool(getattr(user, "trading_paused", False)):
+                changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
+                user.mt_status = "connected"
+                user.can_trade = False
+                if changed:
+                    db.commit()
+                    logger.info(f"MT connected but trading_paused=true for user {user.id}; keeping non-tradable")
+                return user
+
+            account_info = await get_account_information(meta_account_id)
+            has_account_data = isinstance(account_info, dict) and any(
+                account_info.get(key) is not None for key in ("balance", "equity", "marginFree", "freeMargin")
+            )
+            if not has_account_data:
+                changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
+                user.mt_status = "connected"
+                user.can_trade = False
+                if changed:
+                    db.commit()
+                    logger.warning(
+                        f"MT terminal connected but account info unavailable for user {user.id}; marked non-tradable"
+                    )
+                return user
+
+            if user.mt_status != "connected" or not getattr(user, "can_trade", True):
+                user.mt_status = "connected"
+                user.can_trade = True
+                db.commit()
+            return user
+
+        # Any non-live broker state means the account should not be tradable.
+        user.mt_status = "error" if live_status in ("DEPLOY_FAILED", "ERROR") else "disconnected"
+        user.can_trade = False
+        closed_count = force_close_orphaned_trades_for_user(
+            db, user.id, close_reason=f"ACCOUNT_STATE_{live_status or 'UNKNOWN'}"
+        )
+        db.commit()
+        logger.warning(
+            f"MT state resynced for user {user.id}: live_status={live_status}, force_closed_trades={closed_count}"
+        )
+    except Exception as e:
+        logger.warning(f"Could not refresh MT state for user {user.id}: {e}")
+
+    return user
 
 
 def _safe_last4(encrypted_val: str | None) -> str | None:
@@ -48,8 +114,9 @@ def get_ea_token(user=Depends(get_current_user)):
     }
 
 @router.get("/me")
-def get_user_profile(user=Depends(get_current_user)):
+async def get_user_profile(user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Return the user's profile information, API keys, and notification settings."""
+    user = await _refresh_user_mt_state(user, db)
     return {
         "email": user.email,
         "full_name": user.full_name or "",
@@ -64,9 +131,26 @@ def get_user_profile(user=Depends(get_current_user)):
         "has_mt5_key": bool(user.meta_account_id),
         "mt_login": user.mt_login,
         "mt_server": user.mt_server,
+        "mt_broker": user.mt_broker,
         "mt_status": user.mt_status,
+        "can_trade": bool(getattr(user, "can_trade", True)),
         "ea_token_active": bool(user.ea_token)
     }
+
+class UpdatePasswordRequest(BaseModel):
+    password: str
+
+@router.put("/me/password")
+def update_password(data: UpdatePasswordRequest, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Update the user's password (email/password accounts only)."""
+    from app.utils.security import hash_password
+    if not user.password_hash:
+        raise HTTPException(status_code=400, detail="OAuth accounts cannot set a password here.")
+    if len(data.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    user.password_hash = hash_password(data.password)
+    db.commit()
+    return {"message": "Password updated successfully"}
 
 class UpdateProfileRequest(BaseModel):
     full_name: str | None = None
@@ -102,11 +186,16 @@ def delete_mt5_key(user=Depends(get_current_user), db: Session = Depends(get_db)
     user.mt_broker = None
     user.meta_account_id = None
     user.mt_status = "disconnected"
+    user.trading_paused = False
+    user.can_trade = False
+    closed_count = force_close_orphaned_trades_for_user(
+        db, user.id, close_reason="ACCOUNT_DISCONNECTED"
+    )
     db.commit()
-    return {"message": "MT5 connection revoked"}
+    return {"message": "MT5 connection revoked", "force_closed_trades": closed_count}
 
 @router.get("/")
-def get_users():
+def get_users(user=Depends(get_current_user)):
     return {"message": "Users endpoint"}
 
 
@@ -139,6 +228,8 @@ async def connect_mt5(
     user.mt_server = req.mt_server
     user.mt_broker = req.mt_broker
     user.mt_status = "connecting"
+    user.trading_paused = False
+    user.can_trade = True
     db.commit()
 
     # 2. Provision cloud account
@@ -180,12 +271,14 @@ async def connect_mt5(
 
 
 @router.get("/mt-status")
-def get_mt_status(user=Depends(get_current_user)):
+async def get_mt_status(user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Returns the current MetaApi connection status for the authenticated user."""
+    user = await _refresh_user_mt_state(user, db)
     return {
         "mt_status": getattr(user, "mt_status", "disconnected"),
         "mt_broker": getattr(user, "mt_broker", None),
         "mt_server": getattr(user, "mt_server", None),
         "mt_login": getattr(user, "mt_login", None),
         "meta_account_id": getattr(user, "meta_account_id", None),
+        "can_trade": bool(getattr(user, "can_trade", True)),
     }

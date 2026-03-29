@@ -49,6 +49,7 @@ export default function Login() {
                     token: response.credential,
                 });
                 localStorage.setItem("token", res.data.access_token);
+                // Refresh token is now set as HttpOnly cookie by the backend
                 router.push("/dashboard");
             } catch (err: unknown) {
                 const axiosErr = err as { response?: { data?: { detail?: string } } };
@@ -99,6 +100,7 @@ export default function Login() {
             } else {
                 const res = await api.post("/auth/login", { email, password });
                 localStorage.setItem("token", res.data.access_token);
+                // Refresh token is now set as HttpOnly cookie by the backend
                 router.push("/dashboard");
             }
         } catch (err: unknown) {

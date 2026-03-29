@@ -2,12 +2,11 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, UniqueConstra
 from app.database.db import Base
 from sqlalchemy.orm import relationship
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 import enum
 
 class AuthProvider(str, enum.Enum):
     GOOGLE = "google"
-    APPLE = "apple"
     GITHUB = "github"
     DISCORD = "discord"
 
@@ -25,8 +24,8 @@ class OAuthAccount(Base):
     provider_name = Column(String(200), nullable=True)
     provider_avatar = Column(String(500), nullable=True)
     
-    created_at = Column(DateTime, default=lambda: datetime.utcnow())
-    last_used_at = Column(DateTime, default=lambda: datetime.utcnow(), onupdate=lambda: datetime.utcnow())
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_used_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     user = relationship("User", back_populates="oauth_accounts")
 

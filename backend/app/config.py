@@ -28,3 +28,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ─── OAuth ───
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
+# ─── Trading Limits ───
+MAX_POSITION_SIZE = float(os.getenv("MAX_POSITION_SIZE", "0.10"))
+ALLOWED_SYMBOLS = [s.strip() for s in os.getenv(
+    "ALLOWED_SYMBOLS",
+    "XAUUSD,EURUSD,GBPUSD,BTCUSD,ETHUSD,US30,NAS100,BTCUSDT,ETHUSDT"
+).split(",")]
+
+# ─── Risk Guard Limits ───
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "5"))
+MAX_POSITIONS_PER_SYMBOL = int(os.getenv("MAX_POSITIONS_PER_SYMBOL", "1"))
+MAX_DAILY_DRAWDOWN = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.05"))
+MAX_SIGNALS_PER_MINUTE = int(os.getenv("MAX_SIGNALS_PER_MINUTE", "3"))

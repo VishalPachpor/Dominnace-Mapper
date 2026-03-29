@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.utils.subscription_check import check_subscription_active
@@ -11,6 +11,7 @@ from app.utils.security import get_current_user
 import ccxt
 from typing import cast
 import logging
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +42,14 @@ def get_unified_trades(user_id: str, db: Session):
             normalized_status = "closed"
             if state_status == "REVERSED":
                 normalized_result = normalized_result or "LOSS"
-        elif state_status in ["OPEN", "BE_MOVED"]:
+        elif state_status in ["OPEN", "BE_MOVED", "CLOSING"]:
             normalized_status = "open"
             normalized_result = "OPEN"
 
         return normalized_status, normalized_result
 
     legacy_trades = db.query(Trade).filter(Trade.user_id == user_id).all()
+    trade_by_id = {str(t.id): t for t in legacy_trades}
     for t in legacy_trades:
         pnl = float(t.pnl or 0)
         result = t.result
@@ -87,13 +89,29 @@ def get_unified_trades(user_id: str, db: Session):
     # We want all positions to show in history, including OPEN
     bot_positions = db.query(Position).filter(
         Position.user_id == user_id,
-        Position.status.in_(["success", "OPEN", "CLOSED", "TP_HIT", "STOPPED"])
+        Position.status.in_(["success", "OPEN", "CLOSING", "CLOSED", "TP_HIT", "STOPPED"])
     ).all()
 
     for p in bot_positions:
-        pnl = float(p.pnl or 0)
-        status = (p.status or "open").lower()
-        status, result = apply_state_authority(p.id, status, None)
+        linked_trade = trade_by_id.get(str(p.id))
+        canonical_entry = linked_trade.entry if linked_trade and linked_trade.entry is not None else p.entry
+        canonical_exit = linked_trade.exit if linked_trade and linked_trade.exit is not None else p.exit_price
+        canonical_pnl = (
+            float(linked_trade.pnl)
+            if linked_trade and linked_trade.pnl is not None
+            else float(p.pnl or 0)
+        )
+        canonical_status = linked_trade.status if linked_trade and linked_trade.status else p.status
+        canonical_result = linked_trade.result if linked_trade else None
+        canonical_closed_at = (
+            linked_trade.close_time
+            if linked_trade and linked_trade.close_time is not None
+            else p.closed_at
+        )
+
+        pnl = canonical_pnl
+        status = (canonical_status or "open").lower()
+        status, result = apply_state_authority(p.id, status, canonical_result)
         
         # Calculate WIN/LOSS/BE for closed positions
         if status == "open":
@@ -108,20 +126,24 @@ def get_unified_trades(user_id: str, db: Session):
                 result = result or "BE"
 
         # Use closed_at if available for chronological sorting, fallback to created_at
-        time_val = p.closed_at if p.closed_at else p.created_at
+        time_val = canonical_closed_at if canonical_closed_at else p.created_at
 
         unified_trades.append({
             "id": p.id,
             "symbol": p.symbol,
             "side": p.side,
-            "entry_price": p.entry,
-            "exit_price": p.exit_price,
+            "entry_price": canonical_entry,
+            "exit_price": canonical_exit,
             "sl": p.sl,
             "tp": p.tp,
             "pnl": pnl,
-            "closed_at": p.closed_at.isoformat() if p.closed_at else None,
+            "closed_at": canonical_closed_at.isoformat() if canonical_closed_at else None,
             "result": result,
-            "volume": 0.01,
+            "volume": (
+                linked_trade.lot_size
+                if linked_trade and linked_trade.lot_size is not None
+                else (p.lot_size or 0.01)
+            ),
             "created_at": time_val, # Keep as datetime object for sorting
             "status": status,
             "source": "bot_position",
@@ -132,13 +154,77 @@ def get_unified_trades(user_id: str, db: Session):
     unified_trades.sort(key=lambda x: x["created_at"] if x["created_at"] else datetime.min, reverse=True)
     return unified_trades
 
-from datetime import datetime
-
 @router.get("")
 async def get_trades(user = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Returns all trades: unified DB trades + live open positions from MetaApi.
     """
+    meta_account_id = getattr(user, "meta_account_id", None)
+
+    # Reconcile stale DB-only OPEN rows against live broker positions before building history.
+    # This keeps ghost rows out of History and prevents impossible close actions.
+    if meta_account_id:
+        try:
+            from app.services.metaapi_service import get_open_positions
+            from app.routes.positions import _finalize_stale_open_trade, _find_close_deal
+            from app.services.metaapi_service import get_deal_history
+
+            broker_positions = await get_open_positions(meta_account_id)
+            broker_deals = await get_deal_history(meta_account_id)
+            live_ids = {str(p.get("id")) for p in broker_positions if p.get("id") is not None}
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=120)
+            changed = False
+
+            open_trades = db.query(Trade).filter(
+                Trade.user_id == user.id,
+                Trade.status.in_(["OPEN", "CLOSING"])
+            ).all()
+            for trade in open_trades:
+                if str(trade.id) in live_ids:
+                    continue
+                opened_at = trade.execution_time or trade.created_at
+                if opened_at and opened_at.tzinfo is None:
+                    opened_at = opened_at.replace(tzinfo=timezone.utc)
+                if opened_at and opened_at > cutoff:
+                    continue
+                _finalize_stale_open_trade(
+                    db,
+                    trade,
+                    reason="BROKER_POSITION_NOT_FOUND",
+                    close_deal=_find_close_deal(trade.id, broker_deals),
+                )
+                changed = True
+
+            open_positions = db.query(Position).filter(
+                Position.user_id == user.id,
+                Position.status.in_(["OPEN", "CLOSING"])
+            ).all()
+            for pos in open_positions:
+                if db.query(Trade.id).filter(Trade.id == pos.id).first():
+                    # The linked trade row is authoritative and was handled above.
+                    continue
+                if str(pos.id) in live_ids:
+                    continue
+                opened_at = pos.created_at
+                if opened_at and opened_at.tzinfo is None:
+                    opened_at = opened_at.replace(tzinfo=timezone.utc)
+                if opened_at and opened_at > cutoff:
+                    continue
+                # Orphaned position rows should not be finalized as fake
+                # breakeven trades. Keep them in CLOSING until a real broker
+                # close deal is found or a linked trade row reconciles them.
+                pos.status = "CLOSING"
+                state = db.query(TradeState).filter(TradeState.position_id == pos.id).first()
+                if state and state.status in ("OPEN", "BE_MOVED", "CLOSING"):
+                    state.status = "CLOSING"
+                    state.last_checked_at = datetime.now(timezone.utc)
+                changed = True
+
+            if changed:
+                db.commit()
+        except Exception as e:
+            logger.warning(f"Failed stale-history reconciliation for user {user.id}: {e}")
+
     unified_trades = get_unified_trades(user.id, db)
     
     # Format dates for API response
@@ -150,7 +236,6 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
         result_list.append(formatted)
 
     # 2. Get LIVE data from MetaApi (Open Positions + Deal History)
-    meta_account_id = getattr(user, "meta_account_id", None)
     if meta_account_id:
         try:
             from app.services.metaapi_service import get_open_positions, get_deal_history
@@ -238,11 +323,13 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
                         row["pnl"] = round(pnl, 2)
                         row["result"] = result
                         row["status"] = "closed"
-                        row["source"] = row.get("source") or "metaapi_history"
+                        row["source"] = "metaapi_history"
                         row["commission"] = round(commission, 2)
                         row["swap"] = round(swap, 2)
                         row["deal_id"] = deal_id
                         row["broker_time"] = d.get("brokerTime")
+                        row["close_time"] = d.get("time")
+                        row["closed_at"] = d.get("time")
                         if not row.get("entry_price"):
                             row["entry_price"] = entry_map.get(pos_id)
                     continue
@@ -305,7 +392,6 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
     result_list = list(deduped.values()) + [r for r in result_list if not r.get("id")]
 
     # Re-sort everything chronologically newest first
-    from datetime import timezone
     def parse_time(t_str):
         if not t_str: return datetime.min.replace(tzinfo=timezone.utc)
         if isinstance(t_str, datetime):
@@ -317,7 +403,7 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
             if val.tzinfo is None:
                 return val.replace(tzinfo=timezone.utc)
             return val
-        except:
+        except (ValueError, TypeError, AttributeError):
             return datetime.min.replace(tzinfo=timezone.utc)
 
     result_list.sort(key=lambda x: parse_time(x.get("created_at")), reverse=True)
@@ -327,6 +413,7 @@ async def get_trades(user = Depends(get_current_user), db: Session = Depends(get
 
 @router.get("/dashboard")
 async def get_dashboard_stats(user = Depends(get_current_user), db: Session = Depends(get_db)):
+    current_balance = 10000.0
     current_equity = 10000.0
     active_trades_count = 0
     unrealized_pnl = 0.0
@@ -335,6 +422,7 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
 
     # A. Check EA Bridge MT5 Balance
     if getattr(user, "mt5_equity", 0.0) > 0:
+        current_balance = getattr(user, "mt5_balance", current_balance)
         current_equity = user.mt5_equity
         unrealized_pnl = round(user.mt5_equity - getattr(user, "mt5_balance", 0.0), 2)
         active_trades_count = db.query(Position).filter(
@@ -352,6 +440,7 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
 
             info = await get_account_information(acct)
             if info:
+                current_balance = float(info.get("balance", current_balance))
                 current_equity = float(info.get("equity", info.get("balance", current_equity)))
                 balance_fetched = True
 
@@ -373,7 +462,8 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
             })
             balance = exchange.fetch_balance()
             if 'USDT' in balance.get('total', {}):
-                current_equity = float(balance['total']['USDT'])
+                current_balance = float(balance['total']['USDT'])
+                current_equity = current_balance
                 balance_fetched = True
         except Exception as e:
             logger.error(f"Failed to fetch CCXT Binance balance for user {user.id}: {str(e)}")
@@ -439,7 +529,7 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
             from app.services.metaapi_service import get_deal_history, get_open_positions as get_pos
             from datetime import datetime
             
-            today_str = datetime.utcnow().strftime("%Y-%m-%d")
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
             deals = await get_deal_history(meta_account_id)
             live_positions = await get_pos(meta_account_id)
@@ -520,7 +610,7 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
             equity_data = [{"time": "Today", "pnl": round(cast(float, current_equity), 2)}]
 
     return {
-        "account_balance": round(cast(float, current_equity), 2),
+        "account_balance": round(cast(float, current_balance), 2),
         "active_trades": active_trades_count,
         "win_rate": round(cast(float, win_rate), 2),
         "profit_factor": profit_factor,
@@ -528,4 +618,34 @@ async def get_dashboard_stats(user = Depends(get_current_user), db: Session = De
         "unrealized_pnl": round(unrealized_float, 2),
         "daily_pnl": round(daily_pnl, 2),
         "equity_curve": equity_data[-30:]
+    }
+
+
+@router.get("/debug/{trade_id}")
+async def debug_trade_status(trade_id: str, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Lightweight debugging endpoint for trade/state consistency.
+    """
+    trade = db.query(Trade).filter(Trade.id == trade_id, Trade.user_id == user.id).first()
+    if not trade:
+        raise HTTPException(status_code=404, detail="Trade not found")
+
+    state = db.query(TradeState).filter(
+        TradeState.position_id == trade_id,
+        TradeState.user_id == user.id
+    ).order_by(TradeState.updated_at.desc()).first()
+
+    position = db.query(Position).filter(Position.id == trade_id, Position.user_id == user.id).first()
+
+    return {
+        "trade_id": trade.id,
+        "trade_status": trade.status,
+        "trade_result": trade.result,
+        "trade_retry_count": trade.retry_count or 0,
+        "trade_last_synced_at": trade.last_synced_at.isoformat() if trade.last_synced_at else None,
+        "state_status": state.status if state else None,
+        "state_last_checked_at": state.last_checked_at.isoformat() if state and state.last_checked_at else None,
+        "position_status": position.status if position else None,
+        "position_exit_price": position.exit_price if position else None,
+        "position_pnl": position.pnl if position else None,
     }

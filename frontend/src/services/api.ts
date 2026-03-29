@@ -23,6 +23,7 @@ function resolveApiBaseUrl() {
 
 const api = axios.create({
     baseURL: resolveApiBaseUrl(),
+    withCredentials: true, // Send HttpOnly cookies on every request
 });
 
 api.interceptors.request.use((config) => {
@@ -32,16 +33,33 @@ api.interceptors.request.use((config) => {
             config.headers.Authorization = `Bearer ${token}`;
         }
     }
+    if ((config.method || "get").toLowerCase() === "get") {
+        config.headers["Cache-Control"] = "no-cache";
+        config.headers.Pragma = "no-cache";
+    }
     return config;
 });
 
 api.interceptors.response.use(
     (response) => response,
-    (error) => {
+    async (error) => {
         const status = error?.response?.status;
         const requestUrl = String(error?.config?.url || "");
 
         if (typeof window !== "undefined" && status === 401 && !requestUrl.startsWith("/auth/")) {
+            // Attempt silent token refresh using HttpOnly cookie (sent automatically)
+            if (!error.config._retry) {
+                error.config._retry = true;
+                try {
+                    const res = await api.post("/auth/refresh");
+                    const newToken = res.data.access_token;
+                    localStorage.setItem("token", newToken);
+                    error.config.headers.Authorization = `Bearer ${newToken}`;
+                    return api(error.config);
+                } catch {
+                    // Refresh failed — fall through to logout
+                }
+            }
             localStorage.removeItem("token");
             if (window.location.pathname !== "/login") {
                 window.location.href = "/login";

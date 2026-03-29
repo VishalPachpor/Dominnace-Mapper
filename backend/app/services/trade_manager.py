@@ -1,4 +1,5 @@
 import logging
+import os
 from app.services.execution_engine import ExecutionEngine
 from app.services.execution_adapter import adapt_order
 from app.services.exceptions import ExecutionValidationError, BrokerAdapterError
@@ -7,6 +8,8 @@ from app.models.user import User
 from app.utils.telegram import send_telegram_message
 
 logger = logging.getLogger(__name__)
+
+MAX_ENTRY_DELAY_SECONDS = int(os.getenv("DOM_MAX_ENTRY_DELAY_SECONDS", "30"))
 
 class TradeManager:
 
@@ -56,14 +59,23 @@ class TradeManager:
         db = SessionLocal()
         signal_id = signal.get("signal_id")
         from app.models.signal import Signal
+        signal_time = None
+        signal_time_str = signal.get("signal_time")
+        if signal_time_str:
+            from datetime import datetime, timezone
+            try:
+                signal_time = datetime.fromisoformat(signal_time_str.replace("Z", "+00:00"))
+                if signal_time.tzinfo is None:
+                    signal_time = signal_time.replace(tzinfo=timezone.utc)
+            except Exception:
+                signal_time = None
+
         if signal_id:
             signal_exists = db.query(Signal.id).filter(Signal.id == signal_id).first()
             if not signal_exists:
                 signal_id = None
 
         if not signal_id:
-            signal_time_str = signal.get("signal_time")
-            signal_time = None
             if signal_time_str:
                 from datetime import datetime, timedelta, timezone
                 try:
@@ -98,6 +110,17 @@ class TradeManager:
             logger.warning(f"Skipping execution: missing or unknown signal_id for {symbol}. Enforcing webhook-only trades.")
             db.close()
             return
+
+        if signal_time:
+            from datetime import datetime, timezone
+            signal_age_seconds = (datetime.now(timezone.utc) - signal_time).total_seconds()
+            if signal_age_seconds > MAX_ENTRY_DELAY_SECONDS:
+                logger.warning(
+                    f"Skipping stale DOM signal for {symbol}: age={signal_age_seconds:.2f}s "
+                    f"(max={MAX_ENTRY_DELAY_SECONDS}s). Entry is no longer at the next candle open."
+                )
+                db.close()
+                return
         
         import time
         start_time = time.time()
@@ -118,6 +141,11 @@ class TradeManager:
 
             for user in active_users:
                 try:
+                    if not getattr(user, "can_trade", True):
+                        logger.warning(f"Trade blocked: user {user.id} has can_trade=False")
+                        skipped_count += 1
+                        continue
+
                     # Skip fake/test accounts safely
                     meta_id = getattr(user, "meta_account_id", None)
                     if meta_id and isinstance(meta_id, str) and meta_id.startswith("mt5-"):
@@ -131,12 +159,15 @@ class TradeManager:
                     from app.utils.redis_client import redis_client
                     import datetime
                     
-                    MAX_TRADES_PER_DAY = 20
-                    today_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+                    MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "20"))
+                    today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
                     daily_limit_key = f"daily_trades:{user.id}:{today_str}"
-                    
-                    current_trades = redis_client.get(daily_limit_key)
-                    if current_trades and int(current_trades) >= MAX_TRADES_PER_DAY:
+
+                    # Atomic increment-and-check to prevent race conditions
+                    new_count = redis_client.incr(daily_limit_key)
+                    redis_client.expire(daily_limit_key, 86400)
+                    if new_count > MAX_TRADES_PER_DAY:
+                        redis_client.decr(daily_limit_key)
                         logger.warning(f"User {user.id} has reached the absolute MAX_TRADES_PER_DAY limit ({MAX_TRADES_PER_DAY}). Trade skipped to prevent unbounded drawdown.")
                         skipped_count += 1
                         continue
@@ -271,10 +302,7 @@ class TradeManager:
                         from app.utils.metrics import successful_trades_total
                         successful_trades_total.labels(symbol=trade["symbol"]).inc()
 
-                        # Increment successful trades count
-                        redis_client.incr(daily_limit_key)
-                        if not current_trades:
-                            redis_client.expire(daily_limit_key, 86400) # Expiry in 24 hours
+                        # Daily limit already incremented atomically before execution
                         
                         # --- NEW: Immediate Trade Logging (Execution Flow) ---
                         from app.models.trade import Trade
@@ -301,6 +329,47 @@ class TradeManager:
                         if signal_time:
                             latency_ms = int((execution_time - signal_time).total_seconds() * 1000)
 
+                        signal_entry = float(trade["entry"])
+                        actual_entry = signal_entry
+                        if user.meta_account_id:
+                            try:
+                                positions = await self.engine.get_positions(user.meta_account_id)
+                                opened_position = next(
+                                    (p for p in positions if str(p.get("id")) == str(pos_id)),
+                                    None
+                                )
+                                if not opened_position:
+                                    opened_position = next(
+                                        (
+                                            p for p in positions
+                                            if p.get("symbol") == trade["symbol"]
+                                            and (p.get("type") or "").lower() == trade["side"].lower()
+                                        ),
+                                        None
+                                    )
+                                if opened_position:
+                                    actual_entry = float(
+                                        opened_position.get("openPrice")
+                                        or opened_position.get("price")
+                                        or opened_position.get("currentPrice")
+                                        or signal_entry
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Failed to fetch actual broker entry for {pos_id}: {e}")
+
+                        dom_length_for_be = 0.0
+                        if trade.get("tp") is not None:
+                            dom_length_for_be = abs(float(trade["tp"]) - signal_entry)
+                        elif trade.get("sl") is not None:
+                            dom_length_for_be = abs(signal_entry - float(trade["sl"]))
+
+                        actual_be_trigger = trade["be_trigger"]
+                        if dom_length_for_be > 0:
+                            if trade["side"] == "buy":
+                                actual_be_trigger = actual_entry + (dom_length_for_be * 0.35)
+                            else:
+                                actual_be_trigger = actual_entry - (dom_length_for_be * 0.35)
+
                         new_trade = Trade(
                             id=pos_id,
                             user_id=user.id,
@@ -308,11 +377,11 @@ class TradeManager:
                             bot_id=bot_id,
                             symbol=trade["symbol"],
                             side=trade["side"],
-                            entry=trade["entry"],
+                            entry=actual_entry,
                             lot_size=trade.get("volume"),
                             execution_time=execution_time,
                             execution_latency_ms=latency_ms,
-                            status="EXECUTED",
+                            status="OPEN",
                             result="OPEN",
                             metaapi_trade_id=pos_id
                         )
@@ -328,10 +397,10 @@ class TradeManager:
                             "bot_id": bot_id, # Track bot attribution
                             "symbol": trade["symbol"],
                             "side": trade["side"],
-                            "entry": trade["entry"],
+                            "entry": actual_entry,
                             "sl": trade["sl"],
                             "tp": trade["tp"],
-                            "be_trigger": trade["be_trigger"],
+                            "be_trigger": actual_be_trigger,
                             # Normalize execution status to Position lifecycle states.
                             # Using "success" here makes the UI treat the position as "closed".
                             "status": "OPEN"
@@ -356,17 +425,21 @@ class TradeManager:
                             symbol=trade["symbol"],
                             position_id=pos_id, # Direct link to position record
                             bot_slug=bot_slug or "unknown",
-                            entry_price=trade["entry"],
+                            entry_price=actual_entry,
                             sl_price=trade["sl"],
                             tp_price=trade["tp"],
-                            be_trigger=trade["be_trigger"],
+                            be_trigger=actual_be_trigger,
+                            dom_high=trade.get("dom_high"),
+                            dom_low=trade.get("dom_low"),
+                            dom_close=signal_entry,
+                            dom_length=trade.get("dom_length"),
                             side=trade["side"],
                             status="OPEN"
                         )
                         db.add(ts)
                         db.commit()
                         
-                        logger.info(f"Position, Trade(EXECUTED) and TradeState saved to db for user {user.id}")
+                        logger.info(f"Position, Trade(OPEN) and TradeState saved to db for user {user.id}")
                         success_count += 1
                     else:
                         from app.utils.metrics import execution_failures_total
@@ -435,13 +508,13 @@ class TradeManager:
         Build a trade dict using the correct DOM SL/TP model.
 
         BUY:
-            SL = dom_low                        (price must close below the DOM zone to invalidate)
-            TP = dom_high + dom_length          (project equal distance above the zone)
-            BE = entry + (dom_length * 0.35)    (move SL to breakeven at 35% of target)
+            SL = dom_low                        (low of the dominance candle)
+            TP = entry + dom_length             (dominance candle close + full candle length)
+            BE = entry + (dom_length * 0.35)    (move SL to protected BE at 35% of candle length)
 
         SELL:
             SL = dom_high
-            TP = dom_low - dom_length
+            TP = entry - dom_length
             BE = entry - (dom_length * 0.35)
         """
         # Remove exchange prefix if present (e.g., BINANCE:BTCUSDT -> BTCUSDT)
@@ -459,11 +532,11 @@ class TradeManager:
             dom_length = dom_high - dom_low
             if action == "buy":
                 sl = dom_low                          # SL at bottom of DOM zone
-                tp = dom_high + dom_length            # TP = zone top + full zone range
+                tp = entry + dom_length               # TP = candle close + full zone range
                 be_trigger = entry + (dom_length * 0.35)
             else:  # sell
                 sl = dom_high                         # SL at top of DOM zone
-                tp = dom_low - dom_length             # TP = zone bottom - full zone range
+                tp = entry - dom_length               # TP = candle close - full zone range
                 be_trigger = entry - (dom_length * 0.35)
 
         elif dom_length > 0:
@@ -487,4 +560,8 @@ class TradeManager:
             "sl": round(sl, 5) if sl else 0,
             "tp": round(tp, 5) if tp else 0,
             "be_trigger": round(be_trigger, 5) if be_trigger else 0,
+            "dom_high": round(dom_high, 5) if dom_high else None,
+            "dom_low": round(dom_low, 5) if dom_low else None,
+            "dom_close": round(entry, 5) if entry else 0,
+            "dom_length": round(dom_length, 5) if dom_length else 0,
         }

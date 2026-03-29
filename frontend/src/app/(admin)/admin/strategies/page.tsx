@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import api from "@/services/api";
+import { formatIstDateTime } from "@/utils/ist";
 
 interface StrategyStat {
     bot_slug: string;
@@ -119,7 +120,7 @@ export default function AdminStrategies() {
                                 {/* Footer */}
                                 <div className="mt-auto pt-4 border-t border-outline-variant/5 flex justify-between items-center">
                                     <span className="text-[9px] text-on-surface-variant italic">
-                                        Last closed: {s.last_updated ? new Date(s.last_updated).toLocaleString() : "No closed trades yet"}
+                                        Last closed: {s.last_updated ? formatIstDateTime(s.last_updated) : "No closed trades yet"}
                                     </span>
                                     <span className="material-symbols-outlined text-primary text-lg">analytics</span>
                                 </div>

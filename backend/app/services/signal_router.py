@@ -68,15 +68,14 @@ async def route_signal(data: dict, db: Session):
     raw_payload_str = json.dumps(data, sort_keys=True)
     signal_hash = hashlib.sha256(raw_payload_str.encode()).hexdigest()
     
-    # If this exact signal payload was processed in the last 60 seconds, ignore it
-    if redis_client.get(f"signal_processed:{signal_hash}"):
+    # Atomic idempotency check: SET NX returns True only for the first caller.
+    # This prevents duplicate processing when TradingView retries webhooks.
+    was_new = redis_client.set(f"signal_processed:{signal_hash}", "1", nx=True, ex=60)
+    if not was_new:
         logger.info(f"[Router] Duplicate signal detected and dropped: {signal_hash}")
         signals_dropped_total.labels(reason="idempotency_match").inc()
         _log_signal_failure(db, "IDEMPOTENCY_DUPLICATE", data)
         return 0
-        
-    # Mark signal as processed (expiry 60 seconds)
-    redis_client.setex(f"signal_processed:{signal_hash}", 60, "1")
 
     # ── Bot Lookup ──
     # Priority 1: Explicit "bot" slug in payload (most reliable)
@@ -203,6 +202,7 @@ async def route_signal(data: dict, db: Session):
     enrolled_users = db.query(UserBot).join(User, User.id == UserBot.user_id).filter(
         UserBot.bot_id == bot.id,
         UserBot.is_enabled == True,
+        User.can_trade == True,
         User.trading_paused == False,
         or_(
             User.mt_status == "connected",

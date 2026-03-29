@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import api from "@/services/api";
+import { formatIstDate } from "@/utils/ist";
 
 interface Subscription {
     plan: string;
@@ -14,6 +15,11 @@ export default function BillingPage() {
     const [sub, setSub] = useState<Subscription>({ plan: "free", status: "none", current_period_end: null });
     const [loading, setLoading] = useState(true);
     const [processing, setProcessing] = useState<string | null>(null);
+    const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+    const showToast = (msg: string, type: "success" | "error" = "success") => {
+        setToast({ msg, type });
+        setTimeout(() => setToast(null), 4000);
+    };
 
     useEffect(() => {
         api.get("/billing/subscription")
@@ -32,11 +38,11 @@ export default function BillingPage() {
             } else if (data.payment_url) {
                 window.open(data.payment_url, "_blank");
             } else {
-                alert(`Redirecting to crypto payment... Invoice ID: ${data.payment_id}`);
+                showToast(`Payment created. Invoice ID: ${data.payment_id}`);
             }
         } catch (err: any) {
             console.error("Payment creation failed", err);
-            alert("Payment failed: " + (err.response?.data?.detail || err.message));
+            showToast("Payment failed: " + (err.response?.data?.detail || err.message), "error");
         } finally {
             setProcessing(null);
         }
@@ -53,6 +59,11 @@ export default function BillingPage() {
 
     return (
         <div className="flex flex-col gap-8">
+            {toast && (
+                <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium ${toast.type === "error" ? "bg-tertiary-container text-on-tertiary-container" : "bg-secondary-container text-on-secondary-container"}`}>
+                    {toast.msg}
+                </div>
+            )}
             {/* ─── Current Subscription Banner ─── */}
             <div className="bg-surface-container-low rounded-xl border border-outline-variant/5 p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="flex-1">
@@ -85,7 +96,7 @@ export default function BillingPage() {
                     <div className="text-center">
                         <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest mb-1">Next Billing Cycle</p>
                         <p className="text-xl font-bold text-on-surface">
-                            {sub.current_period_end ? new Date(sub.current_period_end).toLocaleDateString() : "—"}
+                            {sub.current_period_end ? formatIstDate(sub.current_period_end) : "—"}
                         </p>
                     </div>
                 </div>

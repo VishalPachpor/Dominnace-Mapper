@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from pydantic import BaseModel
 import logging
 from app.database.db import get_db
 from app.models.user import User
@@ -25,7 +26,8 @@ def get_system_status(db: Session = Depends(get_db), admin: User = Depends(requi
     redis_status = "connected"
     try:
         redis_client.ping()
-    except:
+    except Exception as e:
+        logger.warning(f"Redis health check failed: {e}")
         redis_status = "error"
 
     # Worker Stats (from Redis counters)
@@ -60,14 +62,26 @@ def get_system_status(db: Session = Depends(get_db), admin: User = Depends(requi
         }
     }
 
+class KillSwitchRequest(BaseModel):
+    enabled: bool
+
 @router.post("/kill-switch")
-def toggle_kill_switch(enable: bool, user: User = Depends(get_current_user)):
+def toggle_kill_switch(body: KillSwitchRequest, user: User = Depends(get_current_user)):
     """Stops or Resumes all trading platform-wide."""
     require_admin(user)
-    redis_client.set(REDIS_KILL_SWITCH_KEY, "1" if enable else "0")
-    status = "enabled" if enable else "disabled"
+    redis_client.set(REDIS_KILL_SWITCH_KEY, "1" if body.enabled else "0")
+    status = "enabled" if body.enabled else "disabled"
     logger.critical(f"Admin {user.id} {status} trading.")
-    return {"status": status}
+    return {"status": status, "message": f"Trading {status}"}
+
+@router.post("/reset-counters")
+def reset_counters(user: User = Depends(get_current_user)):
+    """Resets daily signal and trade counters."""
+    require_admin(user)
+    redis_client.set("signals_today", 0)
+    redis_client.set("trades_today", 0)
+    logger.info(f"Admin {user.id} reset daily counters.")
+    return {"status": "counters_reset"}
 
 def is_trading_enabled() -> bool:
     val = redis_client.get(REDIS_KILL_SWITCH_KEY)

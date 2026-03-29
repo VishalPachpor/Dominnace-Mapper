@@ -30,6 +30,12 @@ interface Trade {
     source?: string;
 }
 
+interface MtConnectionState {
+    mt_status: string;
+    can_trade?: boolean;
+    meta_account_id?: string | null;
+}
+
 export default function TradeHistoryPage() {
     const [trades, setTrades] = useState<Trade[]>([]);
     const [loading, setLoading] = useState(true);
@@ -38,10 +44,15 @@ export default function TradeHistoryPage() {
     const [confirmTarget, setConfirmTarget] = useState<Trade | "all" | null>(null);
     const [detailTrade, setDetailTrade] = useState<Trade | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [mtState, setMtState] = useState<MtConnectionState>({
+        mt_status: "disconnected",
+        can_trade: true,
+        meta_account_id: null,
+    });
 
     const fetchTrades = useCallback(async () => {
         try {
-            const res = await api.get("/trades");
+            const res = await api.get("/trades", { params: { _ts: Date.now() } });
             const raw: Trade[] = Array.isArray(res.data) ? res.data : [];
             // Deduplicate by id — prefer OPEN + live broker records when duplicates exist.
             const statusRank = (status?: string) => (status || "").toLowerCase() === "open" ? 2 : 1;
@@ -83,11 +94,35 @@ export default function TradeHistoryPage() {
         }
     }, []);
 
+    const fetchMtStatus = useCallback(async () => {
+        try {
+            const res = await api.get("/users/mt-status", { params: { _ts: Date.now() } });
+            setMtState(res.data || { mt_status: "disconnected" });
+        } catch {
+            // ignore status fetch failures for history rendering
+        }
+    }, []);
+
     useEffect(() => {
         fetchTrades();
+        fetchMtStatus();
         const interval = setInterval(fetchTrades, 15000);
-        return () => clearInterval(interval);
-    }, [fetchTrades]);
+        const statusInterval = setInterval(fetchMtStatus, 30000);
+        return () => {
+            clearInterval(interval);
+            clearInterval(statusInterval);
+        };
+    }, [fetchTrades, fetchMtStatus]);
+
+    useEffect(() => {
+        const onAccountStatusChanged = () => {
+            setLoading(true);
+            fetchTrades();
+            fetchMtStatus();
+        };
+        window.addEventListener("dm:account-status-changed", onAccountStatusChanged);
+        return () => window.removeEventListener("dm:account-status-changed", onAccountStatusChanged);
+    }, [fetchTrades, fetchMtStatus]);
 
     // ── Computed stats from real data ──
     const openTrades = trades.filter(t => t.status === "open" || t.result === "OPEN");
@@ -187,9 +222,22 @@ export default function TradeHistoryPage() {
     };
 
     const fmt = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const isInactiveAccount = mtState.can_trade === false && (Boolean(mtState.meta_account_id) || mtState.mt_status === "connected");
 
     return (
         <div className="flex flex-col gap-6">
+            {isInactiveAccount && (
+                <div className="p-4 rounded-xl border border-tertiary/30 bg-tertiary-container/10">
+                    <div className="flex items-start gap-3">
+                        <span className="material-symbols-outlined text-tertiary">warning</span>
+                        <div>
+                            <p className="text-sm font-bold text-tertiary">Historical Performance (Account Inactive)</p>
+                            <p className="text-xs text-on-surface-variant mt-1">Data shown from last active session.</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* ─── Top: Equity Curve + Summary Cards ─── */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Dynamic Equity Curve */}
@@ -197,7 +245,12 @@ export default function TradeHistoryPage() {
                     <div className="flex items-center justify-between mb-4">
                         <div>
                             <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Equity Curve</p>
-                            <h2 className="text-lg font-bold text-on-surface">Cumulative Returns</h2>
+                            <h2 className="text-lg font-bold text-on-surface">
+                                {isInactiveAccount ? "Historical Performance (Account Inactive)" : "Historical Performance"}
+                            </h2>
+                            <p className="text-[11px] text-on-surface-variant mt-1">
+                                {isInactiveAccount ? "Data shown from last active session." : "Historical trade-performance data."}
+                            </p>
                         </div>
                         <span className={`text-sm font-bold ${totalPnl >= 0 ? "text-secondary" : "text-tertiary"}`}>
                             {totalPnl >= 0 ? "+" : ""}{fmt(totalPnl)}
@@ -301,6 +354,7 @@ export default function TradeHistoryPage() {
                             ) : (
                                 filteredTrades.map((t, i) => {
                                     const isOpen = t.status === "open" || t.result === "OPEN";
+                                    const canCloseLive = isOpen && t.source === "metaapi_live";
                                     const isBuy = t.side?.toUpperCase() === "BUY";
                                     const pnl = t.pnl || 0;
                                     const displayPrice = isOpen ? t.current_price : t.exit_price;
@@ -349,7 +403,7 @@ export default function TradeHistoryPage() {
                                                 </span>
                                             </td>
                                             <td className="py-4 px-4 text-center">
-                                                {isOpen ? (
+                                                {canCloseLive ? (
                                                     <button
                                                         onClick={() => setConfirmTarget(t)}
                                                         disabled={closing === t.id}
@@ -359,6 +413,14 @@ export default function TradeHistoryPage() {
                                                         <span className="material-symbols-outlined text-[18px]">
                                                             {closing === t.id ? "hourglass_empty" : "close"}
                                                         </span>
+                                                    </button>
+                                                ) : isOpen ? (
+                                                    <button
+                                                        onClick={() => setDetailTrade(t)}
+                                                        className="text-on-surface-variant hover:text-primary transition-colors"
+                                                        title="Open row pending live broker sync"
+                                                    >
+                                                        <span className="material-symbols-outlined text-[18px]">visibility</span>
                                                     </button>
                                                 ) : (
                                                     <button

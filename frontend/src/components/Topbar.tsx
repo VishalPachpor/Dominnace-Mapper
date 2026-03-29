@@ -7,12 +7,17 @@ import api from "@/services/api";
 interface MtStatus {
     mt_status: string;
     mt_broker: string | null;
+    can_trade?: boolean;
+    meta_account_id?: string | null;
 }
 
 interface UserMini {
     full_name: string;
     email: string;
     avatar_url: string;
+    can_trade?: boolean;
+    has_mt5_key?: boolean;
+    mt_status?: string;
 }
 
 export default function Topbar({ toggleSidebar }: { toggleSidebar?: () => void }) {
@@ -21,23 +26,45 @@ export default function Topbar({ toggleSidebar }: { toggleSidebar?: () => void }
 
     useEffect(() => {
         const fetchStatus = () => {
-            api.get("/users/mt-status")
-                .then(res => setStatus(res.data))
+            Promise.allSettled([
+                api.get("/users/mt-status", { params: { _ts: Date.now() } }),
+                api.get("/users/me", { params: { _ts: Date.now() } }),
+            ])
+                .then(([statusRes, userRes]) => {
+                    const statusData = statusRes.status === "fulfilled" ? statusRes.value.data : {};
+                    const userData = userRes.status === "fulfilled" ? userRes.value.data : {};
+
+                    setStatus({
+                        mt_status: statusData.mt_status || userData.mt_status || "disconnected",
+                        mt_broker: statusData.mt_broker || userData.mt_broker || null,
+                        can_trade:
+                            typeof statusData.can_trade === "boolean"
+                                ? statusData.can_trade
+                                : userData.can_trade,
+                        meta_account_id: statusData.meta_account_id || null,
+                    });
+
+                    if (userRes.status === "fulfilled") {
+                        setUser(userData);
+                    }
+                })
                 .catch(() => {});
         };
         fetchStatus();
         const interval = setInterval(fetchStatus, 30000);
-        return () => clearInterval(interval);
+        const onAccountStatusChanged = () => fetchStatus();
+        window.addEventListener("dm:account-status-changed", onAccountStatusChanged);
+        return () => {
+            clearInterval(interval);
+            window.removeEventListener("dm:account-status-changed", onAccountStatusChanged);
+        };
     }, []);
 
-    useEffect(() => {
-        api.get("/users/me")
-            .then(res => setUser(res.data))
-            .catch(() => {});
-    }, []);
-
-    const isConnected = status.mt_status === "connected";
+    const canTrade = status.can_trade ?? user?.can_trade ?? true;
+    const hasLinkedMtAccount = Boolean(status.meta_account_id || user?.has_mt5_key);
+    const isConnected = status.mt_status === "connected" && canTrade;
     const isConnecting = status.mt_status === "connecting" || status.mt_status === "deploying";
+    const isInactive = !canTrade && (hasLinkedMtAccount || status.mt_status === "connected" || user?.mt_status === "connected");
 
     return (
         <header className="h-16 flex items-center justify-between px-6 bg-surface border-b border-outline-variant/15 text-on-surface z-40 relative">
@@ -60,17 +87,25 @@ export default function Topbar({ toggleSidebar }: { toggleSidebar?: () => void }
                     <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-sm border ${
                         isConnected
                             ? "bg-secondary-container/10 border-secondary/20"
+                            : isInactive
+                            ? "bg-tertiary-container/10 border-tertiary/20"
                             : isConnecting
                             ? "bg-primary-container/10 border-primary/20"
                             : "bg-surface-container-highest border-outline-variant/20"
                     }`}>
                         <div className={`w-1.5 h-1.5 rounded-full ${
-                            isConnected ? "bg-secondary animate-pulse" : isConnecting ? "bg-primary animate-bounce" : "bg-outline flex-shrink-0"
+                            isConnected
+                                ? "bg-secondary animate-pulse"
+                                : isInactive
+                                ? "bg-tertiary"
+                                : isConnecting
+                                ? "bg-primary animate-bounce"
+                                : "bg-outline flex-shrink-0"
                         }`}></div>
                         <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                            isConnected ? "text-secondary" : isConnecting ? "text-primary" : "text-on-surface-variant"
+                            isConnected ? "text-secondary" : isInactive ? "text-tertiary" : isConnecting ? "text-primary" : "text-on-surface-variant"
                         }`}>
-                            {isConnected ? "MT5 Connected" : isConnecting ? "Connecting..." : "MT5 Disconnected"}
+                            {isConnected ? "MT5 Connected" : isInactive ? "MT5 Inactive" : isConnecting ? "Connecting..." : "MT5 Disconnected"}
                         </span>
                     </div>
                     {/* Live Badge */}

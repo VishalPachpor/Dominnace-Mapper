@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, Integer, Float, DateTime
-from datetime import datetime
+from datetime import datetime, timezone
 from app.database.db import Base
 
 class StrategyStats(Base):
@@ -10,4 +10,4 @@ class StrategyStats(Base):
     total_pnl = Column(Float, default=0.0)
     wins = Column(Integer, default=0)
     losses = Column(Integer, default=0)
-    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_updated = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

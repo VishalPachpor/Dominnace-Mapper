@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import api from "@/services/api";
 
 const navItems = [
     { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
@@ -30,7 +31,8 @@ export default function Sidebar({ onClose }: { onClose?: () => void }) {
                 : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
         }`;
 
-    const handleLogout = () => {
+    const handleLogout = async () => {
+        try { await api.post("/auth/logout"); } catch { /* best effort */ }
         if (typeof window !== "undefined") {
             localStorage.removeItem("token");
         }

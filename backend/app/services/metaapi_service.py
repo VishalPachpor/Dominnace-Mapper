@@ -133,8 +133,8 @@ async def get_account_status(account_id: str, use_cache: bool = True) -> str:
             if cached:
                 logger.debug(f"[Cache HIT] mt_status:{account_id} = {cached}")
                 return cached.decode() if isinstance(cached, bytes) else cached
-        except Exception:
-            pass  # Redis unavailable — fall through to live call
+        except Exception as e:
+            logger.debug(f"Redis unavailable for mt_status cache: {type(e).__name__}")
 
     try:
         _track_call("get_account_status")
@@ -251,18 +251,15 @@ async def cache_all_account_statuses():
     while True:
         try:
             db = SessionLocal()
-            # SMART: only poll users who are NOT already confirmed connected
-            # Connected users don't need constant API polling — they're stable.
             users_needing_poll = db.query(User).filter(
                 User.is_active == True,
                 User.meta_account_id.isnot(None),
-                User.mt_status.in_(["deploying", "connecting", "error"])
             ).all()
 
             if users_needing_poll:
-                logger.info(f"[StatusPoller] Polling {len(users_needing_poll)} non-connected users")
+                logger.info(f"[StatusPoller] Polling {len(users_needing_poll)} MetaApi-linked users")
             else:
-                logger.debug("[StatusPoller] All users connected — skipping REST call this cycle")
+                logger.debug("[StatusPoller] No MetaApi-linked users found")
 
             for user in users_needing_poll:
                 meta_id = user.meta_account_id
@@ -278,14 +275,31 @@ async def cache_all_account_statuses():
                 # Cache with 6 min expiry (slightly longer than poll interval for coverage)
                 redis_client.setex(f"mt_status:{meta_id}", 360, status)
 
-                # Update DB if status changed to connected
-                if status in ("DEPLOYED", "CONNECTED") and user.mt_status != "connected":
+                # Keep DB aligned even after an account was previously healthy.
+                if status in ("DEPLOYED", "CONNECTED"):
+                    if bool(getattr(user, "trading_paused", False)):
+                        changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
+                        user.mt_status = "connected"
+                        user.can_trade = False
+                        if changed:
+                            db.commit()
+                            logger.info(f"[StatusPoller] User {user.id} is connected but trading_paused=true; kept non-tradable")
+                        continue
+
+                    changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is False
                     user.mt_status = "connected"
-                    db.commit()
-                    logger.info(f"[StatusPoller] User {user.id} is now connected (detected by poller)")
-                elif status in ("DEPLOY_FAILED", "ERROR") and user.mt_status != "error":
-                    user.mt_status = "error"
-                    db.commit()
+                    user.can_trade = True
+                    if changed:
+                        db.commit()
+                        logger.info(f"[StatusPoller] User {user.id} is connected")
+                else:
+                    next_status = "error" if status in ("DEPLOY_FAILED", "ERROR") else "disconnected"
+                    changed = user.mt_status != next_status or getattr(user, "can_trade", True) is True
+                    user.mt_status = next_status
+                    user.can_trade = False
+                    if changed:
+                        db.commit()
+                        logger.warning(f"[StatusPoller] User {user.id} downgraded to {next_status} (live={status})")
 
             db.close()
         except Exception as e:
@@ -322,12 +336,9 @@ async def get_open_positions(account_id: str) -> list:
             logger.debug(f"[Cache HIT] positions:{account_id}")
             return json.loads(cached)
 
-        # 2. Try to acquire distributed lock (setnx = set if not exists)
-        lock_acquired = redis_client.setnx(lock_key, "1")
-        if lock_acquired:
-            # We won the lock — we do the REST call
-            redis_client.expire(lock_key, 2)  # Auto-release after 2s in case we crash
-        else:
+        # 2. Try to acquire distributed lock atomically (SET NX EX = atomic setnx + expire)
+        lock_acquired = redis_client.set(lock_key, "1", nx=True, ex=2)
+        if not lock_acquired:
             # Another worker is already fetching — wait briefly then read their result
             logger.debug(f"[Lock WAIT] positions:{account_id} — another worker is fetching")
             await asyncio.sleep(0.2)
@@ -335,8 +346,8 @@ async def get_open_positions(account_id: str) -> list:
             if cached:
                 return json.loads(cached)
             # If still no cache after waiting, fall through and do our own call
-    except Exception:
-        pass  # Redis unavailable — fall through to live call
+    except Exception as e:
+        logger.debug(f"Redis unavailable for positions cache: {type(e).__name__}")
 
     try:
         _track_call("get_open_positions")
@@ -501,7 +512,7 @@ async def get_deal_history(account_id: str, days: int = 90) -> list:
     Returns completed deal history from MetaApi for the given account.
     Redis-cached for 60 seconds.
     """
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     cache_key = f"deal_history:{account_id}"
     try:
@@ -515,8 +526,8 @@ async def get_deal_history(account_id: str, days: int = 90) -> list:
 
     try:
         _track_call("get_deal_history")
-        start = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00.000Z")
-        end = datetime.utcnow().strftime("%Y-%m-%dT23:59:59.999Z")
+        start = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT00:00:00.000Z")
+        end = datetime.now(timezone.utc).strftime("%Y-%m-%dT23:59:59.999Z")
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
@@ -551,8 +562,8 @@ async def execute_trade(
     Includes symbol resolution and a hard volume cap of 0.10 lots for MVP safety.
     Invalidates the Redis positions cache after execution so next check is fresh.
     """
-    MAX_VOLUME = 0.10
-    volume = min(volume, MAX_VOLUME)
+    from app.config import MAX_POSITION_SIZE
+    volume = min(volume, MAX_POSITION_SIZE)
 
     canonical = resolve_symbol(symbol)
     action_type = "ORDER_TYPE_BUY" if side.upper() == "BUY" else "ORDER_TYPE_SELL"
@@ -618,17 +629,29 @@ async def close_position(account_id: str, position_id: str) -> dict:
 
     return result
 
-async def update_position_sl(account_id: str, position_id: str, sl: float) -> bool:
+async def update_position_stops(
+    account_id: str,
+    position_id: str,
+    sl: Optional[float] = None,
+    tp: Optional[float] = None,
+) -> bool:
     """
-    Updates the Stop Loss of an existing position.
+    Updates SL/TP for an existing position.
     """
     payload = {
         "actionType": "POSITION_MODIFY",
         "positionId": position_id,
-        "stopLoss": sl
     }
+    if sl is not None:
+        payload["stopLoss"] = sl
+    if tp is not None:
+        payload["takeProfit"] = tp
 
-    _track_call("update_position_sl")
+    if "stopLoss" not in payload and "takeProfit" not in payload:
+        logger.warning(f"Skipped stop update for {position_id} on {account_id}: no SL/TP supplied")
+        return False
+
+    _track_call("update_position_stops")
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
@@ -636,16 +659,26 @@ async def update_position_sl(account_id: str, position_id: str, sl: float) -> bo
                 json=payload, headers=_headers()
             )
             resp.raise_for_status()
-            logger.info(f"MetaApi position {position_id} SL updated to {sl} on {account_id}")
-            
+            logger.info(
+                f"MetaApi position {position_id} stops updated on {account_id}: "
+                f"sl={sl} tp={tp}"
+            )
+
             # Invalidate position cache
             try:
                 from app.utils.redis_client import redis_client
                 redis_client.delete(f"positions:{account_id}")
             except Exception:
                 pass
-            
+
             return True
     except Exception as e:
-        logger.error(f"Failed to update SL for position {position_id} on {account_id}: {e}")
+        logger.error(f"Failed to update stops for position {position_id} on {account_id}: {e}")
         return False
+
+
+async def update_position_sl(account_id: str, position_id: str, sl: float) -> bool:
+    """
+    Updates the Stop Loss of an existing position.
+    """
+    return await update_position_stops(account_id, position_id, sl=sl)

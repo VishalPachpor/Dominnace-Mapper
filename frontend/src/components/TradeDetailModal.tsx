@@ -15,7 +15,8 @@ interface Trade {
     execution_time?: string;
     close_time?: string;
     execution_latency_ms?: number | null;
-    signal_time?: string;
+    signal_time?: string | null;
+    reject_reason?: string | null;
     volume?: number;
     status?: string;
     commission?: number;
@@ -52,7 +53,7 @@ export default function TradeDetailModal({
     const isWin = trade.result === "WIN";
     const statusColor = trade.status === "open" ? "text-primary" : trade.result === "FAILED" || trade.result === "LOSS" ? "text-tertiary" : isWin ? "text-secondary" : "text-on-surface-variant";
     
-    const fmtDate = (d?: string) => d ? new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Asia/Kolkata" }) : "—";
+    const fmtDate = (d?: string | null) => d ? new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "Asia/Kolkata" }) : "—";
 
     const details = [
         { label: "Status", value: trade.status === "open" ? "LIVE" : trade.result || "CLOSED", color: statusColor },

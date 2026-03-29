@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import api from "@/services/api";
+import { formatIstDate, formatIstTime } from "@/utils/ist";
 
 interface GlobalTrade {
     id: string;
@@ -144,10 +145,10 @@ export default function AdminTrades() {
                                         <td className="py-4 px-6 text-right">
                                             <div className="flex flex-col items-end whitespace-nowrap">
                                                 <span className="text-xs text-on-surface font-medium">
-                                                    {new Date(t.created_at).toLocaleDateString()}
+                                                    {formatIstDate(t.created_at)}
                                                 </span>
                                                 <span className="text-[10px] text-on-surface-variant font-mono">
-                                                    {new Date(t.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                    {formatIstTime(t.created_at).slice(0, 5)}
                                                 </span>
                                             </div>
                                         </td>

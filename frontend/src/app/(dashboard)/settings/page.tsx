@@ -2,15 +2,19 @@
 
 import { useState, useEffect, useCallback } from "react";
 import api from "@/services/api";
+import ConfirmModal from "@/components/ConfirmModal";
 
 type MtStatus = "disconnected" | "connecting" | "deploying" | "connected" | "error" | "";
+type UiStatus = MtStatus | "inactive";
+type AccountAction = "replace" | "disconnect" | null;
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; dot: string }> = {
     disconnected: { label: "Disconnected",  color: "text-on-surface-variant",  dot: "bg-outline" },
     connecting:   { label: "Connecting…",   color: "text-primary",            dot: "bg-primary animate-pulse" },
     deploying:    { label: "Deploying…",    color: "text-primary",            dot: "bg-primary animate-pulse" },
-    connected:    { label: "Connected",     color: "text-secondary",          dot: "bg-secondary" },
+    connected:    { label: "Terminal Connected", color: "text-secondary",     dot: "bg-secondary" },
     error:        { label: "Error",         color: "text-tertiary",           dot: "bg-tertiary" },
+    inactive:     { label: "Expired / Inactive", color: "text-tertiary",      dot: "bg-tertiary" },
 };
 
 const SUPPORTED_BROKERS = [
@@ -34,14 +38,20 @@ export default function Settings() {
     const [mtBroker, setMtBroker] = useState("");
     const [selectedBroker, setSelectedBroker] = useState("");
     const [mtStatus, setMtStatus] = useState<MtStatus>("");
+    const [canTrade, setCanTrade] = useState(true);
     const [mtConnectMsg, setMtConnectMsg] = useState("");
     const [isConnecting, setIsConnecting] = useState(false);
     const [existingLogin, setExistingLogin] = useState<string | null>(null);
+    const [hasMetaAccount, setHasMetaAccount] = useState(false);
+    const [accountAction, setAccountAction] = useState<AccountAction>(null);
+    const [isRunningAccountAction, setIsRunningAccountAction] = useState(false);
 
     const fetchMtStatus = useCallback(async () => {
         try {
             const res = await api.get("/users/mt-status");
             setMtStatus(res.data.mt_status || "disconnected");
+            setCanTrade(res.data.can_trade !== false);
+            setHasMetaAccount(Boolean(res.data.meta_account_id));
             if (res.data.mt_login) setExistingLogin(res.data.mt_login);
         } catch { /* not connected yet */ }
     }, []);
@@ -53,9 +63,17 @@ export default function Settings() {
         const interval = setInterval(async () => {
             const res = await api.get("/users/mt-status");
             const newStatus: MtStatus = res.data.mt_status || "disconnected";
+            const nextCanTrade = res.data.can_trade !== false;
             setMtStatus(newStatus);
+            setCanTrade(nextCanTrade);
+            setHasMetaAccount(Boolean(res.data.meta_account_id));
+            if (res.data.mt_login) setExistingLogin(res.data.mt_login);
             if (newStatus === "connected") {
-                setMtConnectMsg("MT5 terminal is live! Trades will now execute automatically.");
+                if (nextCanTrade) {
+                    setMtConnectMsg("MT5 terminal is live! Trades will now execute automatically.");
+                } else {
+                    setMtConnectMsg("MT5 terminal is connected, but trading is inactive. Replace or disconnect this account.");
+                }
                 clearInterval(interval);
             } else if (newStatus === "error") {
                 setMtConnectMsg("Connection failed. Check your credentials and try again.");
@@ -65,6 +83,13 @@ export default function Settings() {
         return () => clearInterval(interval);
     }, [mtStatus]);
 
+    useEffect(() => {
+        // Prevent contradictory UI: inactive accounts must never keep a stale "live" message.
+        if (!canTrade && mtConnectMsg.includes("Trades will now execute automatically")) {
+            setMtConnectMsg("MT5 terminal is connected, but trading is inactive. Replace or disconnect this account.");
+        }
+    }, [canTrade, mtConnectMsg]);
+
     const handleBrokerSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
         const found = SUPPORTED_BROKERS.find(b => b.label === e.target.value);
         setSelectedBroker(e.target.value);
@@ -72,7 +97,7 @@ export default function Settings() {
         setMtServer(found?.server || "");
     };
 
-    const connectMT5 = async () => {
+    const performConnectMT5 = async () => {
         if (!mtLogin || !mtPassword || !mtServer) {
             setMtConnectMsg("Please fill in all fields.");
             return;
@@ -86,12 +111,28 @@ export default function Settings() {
             });
             setMtStatus("deploying");
             setMtConnectMsg("Cloud terminal is starting up. This takes ~90 seconds…");
-        } catch (err: any) {
+            window.dispatchEvent(new Event("dm:account-status-changed"));
+        } catch (err: unknown) {
+            const detail =
+                typeof err === "object" &&
+                err !== null &&
+                "response" in err &&
+                typeof (err as { response?: { data?: { detail?: string } } }).response?.data?.detail === "string"
+                    ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+                    : null;
             setMtStatus("error");
-            setMtConnectMsg(err?.response?.data?.detail || "Connection failed.");
+            setMtConnectMsg(detail || "Connection failed.");
         } finally {
             setIsConnecting(false);
         }
+    };
+
+    const handleConnectClick = () => {
+        if (hasMetaAccount) {
+            setAccountAction("replace");
+            return;
+        }
+        void performConnectMT5();
     };
 
     const saveKeys = async () => {
@@ -103,7 +144,43 @@ export default function Settings() {
         }
     };
 
-    const statusCfg = STATUS_CONFIG[mtStatus] || STATUS_CONFIG["disconnected"];
+    const disconnectMT5 = async () => {
+        try {
+            await api.delete("/users/api-key/mt5");
+            setMtStatus("disconnected");
+            setCanTrade(false);
+            setHasMetaAccount(false);
+            setExistingLogin(null);
+            setMtLogin("");
+            setMtPassword("");
+            setMtServer("");
+            setMtBroker("");
+            setSelectedBroker("");
+            setMtConnectMsg("Account disconnected. Connect a new account to resume trading.");
+            window.dispatchEvent(new Event("dm:account-status-changed"));
+        } catch {
+            setMtConnectMsg("Failed to disconnect account.");
+        }
+    };
+
+    const handleConfirmAccountAction = async () => {
+        if (!accountAction) return;
+        setIsRunningAccountAction(true);
+        try {
+            if (accountAction === "replace") {
+                await performConnectMT5();
+            } else {
+                await disconnectMT5();
+            }
+        } finally {
+            setIsRunningAccountAction(false);
+            setAccountAction(null);
+        }
+    };
+
+    const isInactiveAccount = !canTrade && hasMetaAccount;
+    const uiStatus: UiStatus = isInactiveAccount ? "inactive" : mtStatus || "disconnected";
+    const statusCfg = STATUS_CONFIG[uiStatus] || STATUS_CONFIG["disconnected"];
 
     const inputClass = "w-full p-3 bg-surface-container-lowest border border-outline-variant/20 rounded-md text-on-surface text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all font-mono";
 
@@ -139,9 +216,9 @@ export default function Settings() {
                                 </div>
                             </div>
                             <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-sm border ${
-                                mtStatus === "connected"
+                                uiStatus === "connected"
                                     ? "bg-secondary-container/10 border-secondary/20"
-                                    : mtStatus === "error"
+                                    : uiStatus === "error" || uiStatus === "inactive"
                                     ? "bg-tertiary-container/10 border-tertiary/20"
                                     : "bg-surface-container-high border-outline-variant/20"
                             }`}>
@@ -152,10 +229,22 @@ export default function Settings() {
                             </div>
                         </div>
 
+                        {isInactiveAccount && (
+                            <div className="text-xs mb-4 p-3 rounded-md border bg-tertiary-container/10 border-tertiary/20 text-tertiary">
+                                This MT5 account is attached, but trading is inactive. If your broker demo has expired, replace or disconnect this account to resume safely.
+                            </div>
+                        )}
+
+                        {uiStatus === "connected" && (
+                            <div className="text-[11px] mb-4 p-3 rounded-md border bg-secondary-container/5 border-secondary/15 text-on-surface-variant">
+                                This badge reflects the MetaApi terminal session. If your broker portal has expired the demo account but the terminal still shows connected, use <span className="font-semibold text-on-surface">Replace MT5 Account</span> or <span className="font-semibold text-on-surface">Disconnect Account</span>.
+                            </div>
+                        )}
+
                         {mtConnectMsg && (
                             <div className={`text-xs mb-4 p-3 rounded-md border ${
-                                mtStatus === "connected" ? "bg-secondary-container/10 border-secondary/20 text-secondary"
-                                : mtStatus === "error" ? "bg-tertiary-container/10 border-tertiary/20 text-tertiary"
+                                uiStatus === "connected" ? "bg-secondary-container/10 border-secondary/20 text-secondary"
+                                : uiStatus === "error" || uiStatus === "inactive" ? "bg-tertiary-container/10 border-tertiary/20 text-tertiary"
                                 : "bg-primary-container/10 border-primary/20 text-primary"
                             }`}>
                                 {mtConnectMsg}
@@ -214,14 +303,36 @@ export default function Settings() {
                             </div>
                         </div>
 
-                        <button
-                            id="connect-mt5-btn"
-                            className="mt-6 w-full py-3 bg-primary-container text-on-primary-container font-bold rounded-md text-xs uppercase tracking-wider hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                            onClick={connectMT5}
-                            disabled={isConnecting || mtStatus === "connected"}
-                        >
-                            {isConnecting ? "Connecting…" : mtStatus === "connected" ? "Broker Connected" : "Connect MT5 Account"}
-                        </button>
+                        {hasMetaAccount ? (
+                            <div className="mt-3 flex items-center gap-3">
+                                <button
+                                    id="connect-mt5-btn"
+                                    type="button"
+                                    className="flex-1 py-3 bg-primary-container text-on-primary-container font-bold rounded-md text-xs uppercase tracking-wider hover:opacity-90 hover:cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                                    onClick={handleConnectClick}
+                                    disabled={isConnecting || isRunningAccountAction}
+                                >
+                                    {isConnecting ? "Connecting…" : "Replace MT5 Account"}
+                                </button>
+                                <button
+                                    type="button"
+                                    className="flex-1 py-3 bg-tertiary-container/15 text-tertiary font-bold rounded-md text-xs uppercase tracking-wider hover:opacity-90 hover:cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                                    onClick={() => setAccountAction("disconnect")}
+                                    disabled={isConnecting || isRunningAccountAction}
+                                >
+                                    Disconnect Account
+                                </button>
+                            </div>
+                        ) : (
+                            <button
+                                id="connect-mt5-btn"
+                                className="mt-6 w-full py-3 bg-primary-container text-on-primary-container font-bold rounded-md text-xs uppercase tracking-wider hover:opacity-90 hover:cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                                onClick={handleConnectClick}
+                                disabled={isConnecting || isRunningAccountAction}
+                            >
+                                {isConnecting ? "Connecting…" : "Connect MT5 Account"}
+                            </button>
+                        )}
                         <p className="text-[10px] text-on-surface-variant mt-2 text-center">
                             Your password is AES-256 encrypted before storage.
                         </p>
@@ -236,7 +347,7 @@ export default function Settings() {
                                 <p className="text-[10px] text-on-surface-variant">Cloud MT5 Gateway</p>
                             </div>
                             <span className="text-[10px] font-bold text-secondary">
-                                {mtStatus === "connected" ? "100%" : mtStatus === "deploying" ? "75%" : "—"}
+                                {uiStatus === "connected" ? "100%" : mtStatus === "deploying" ? "75%" : "—"}
                             </span>
                         </div>
                         <div className="flex items-center justify-between p-3 bg-surface-container-high rounded-md">
@@ -302,6 +413,30 @@ export default function Settings() {
                     </button>
                 </div>
             </div>
+
+            <ConfirmModal
+                open={accountAction !== null}
+                title={accountAction === "replace" ? "Replace MT5 Account" : "Disconnect MT5 Account"}
+                description={
+                    accountAction === "replace"
+                        ? "This will provision a new MT5 terminal using the credentials in the form. Your current linked account will be replaced."
+                        : "This will disconnect the current MT5 account and stop new auto-trades until you connect another account."
+                }
+                details={[
+                    { label: "Current Login", value: existingLogin || "Not connected" },
+                    { label: "Status", value: statusCfg.label, color: uiStatus === "inactive" ? "text-tertiary" : uiStatus === "connected" ? "text-secondary" : "text-on-surface" },
+                    { label: "Broker", value: mtBroker || selectedBroker || "Not set" },
+                ]}
+                confirmLabel={accountAction === "replace" ? "Replace Account" : "Disconnect Account"}
+                cancelLabel="Keep Current Setup"
+                variant="danger"
+                loading={isRunningAccountAction}
+                loadingLabel={accountAction === "replace" ? "Replacing…" : "Disconnecting…"}
+                onConfirm={handleConfirmAccountAction}
+                onCancel={() => {
+                    if (!isRunningAccountAction) setAccountAction(null);
+                }}
+            />
         </div>
     );
 }

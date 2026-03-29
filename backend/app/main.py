@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import auth, webhook, users, trades, bots, billing, positions, ea_bridge
+from app.routes import auth, webhook, users, trades, bots, billing, positions, ea_bridge, health
 from app.routes.admin import router as admin_router
 from app.config import FRONTEND_URL
 import logging
@@ -63,6 +63,7 @@ app.include_router(trades.router, prefix="/trades", tags=["Trades"])
 app.include_router(positions.router, prefix="/positions", tags=["Positions"])
 app.include_router(billing.router, prefix="/billing", tags=["Billing"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin"])
+app.include_router(health.router)
 
 import asyncio
 import os

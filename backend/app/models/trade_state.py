@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Float, Boolean, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from app.database.db import Base
@@ -23,15 +23,20 @@ class TradeState(Base):
     sl_price = Column(Float, nullable=False)
     tp_price = Column(Float, nullable=False)
     be_trigger = Column(Float, nullable=False)
+    dom_high = Column(Float, nullable=True)
+    dom_low = Column(Float, nullable=True)
+    dom_close = Column(Float, nullable=True)
+    dom_length = Column(Float, nullable=True)
     
     side = Column(String, nullable=False) # 'buy' or 'sell'
     
     # State flags
     status = Column(String, default="OPEN", index=True) # OPEN, BREAKEVEN, REVERSED, CLOSED
     reversal_used = Column(Boolean, default=False)
+    last_checked_at = Column(DateTime, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     user = relationship("User", backref="trade_states")

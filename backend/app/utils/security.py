@@ -12,6 +12,7 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+REFRESH_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
@@ -24,6 +25,21 @@ def create_access_token(user_id: str):
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode = {"sub": user_id, "exp": expire}
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def create_refresh_token(user_id: str):
+    expire = datetime.now(timezone.utc) + timedelta(minutes=REFRESH_TOKEN_EXPIRE_MINUTES)
+    to_encode = {"sub": user_id, "exp": expire, "type": "refresh"}
+    return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def decode_refresh_token(token: str) -> str | None:
+    """Decode a refresh token and return the user_id, or None if invalid."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "refresh":
+            return None
+        return payload.get("sub")
+    except JWTError:
+        return None
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 

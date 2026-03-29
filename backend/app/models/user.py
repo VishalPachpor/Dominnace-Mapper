@@ -2,7 +2,7 @@ from sqlalchemy import Column, String, Boolean, DateTime, Float, ForeignKey
 from app.database.db import Base
 from sqlalchemy.orm import relationship
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timezone
 
 class User(Base):
 
@@ -41,10 +41,11 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     trading_paused = Column(Boolean, default=False)
+    can_trade = Column(Boolean, default=True)
     
     # Tracking & Status
     status = Column(String(20), default="active") # active | suspended | banned
-    created_at = Column(DateTime, default=lambda: datetime.utcnow())
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     last_login = Column(DateTime, nullable=True)
     
     # Subscription Plan

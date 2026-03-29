@@ -1,14 +1,69 @@
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
+from collections import defaultdict
 from app.database.db import SessionLocal
 from app.models.trade_state import TradeState
+from app.models.trade import Trade
+from app.models.position import Position
 from app.models.user import User
 from app.services.execution_engine import ExecutionEngine
 from app.services.trade_manager import TradeManager
 from app.services.analytics import AnalyticsService
+from app.services.trade_closer import force_close_orphaned_trades_for_user
 
 logger = logging.getLogger(__name__)
+
+BE_BUFFER_RATIO = 0.01
+
+
+def _original_dom_entry(state: TradeState) -> float:
+    dom_close = state.dom_close
+    if dom_close is not None:
+        return float(dom_close)
+    return float(state.entry_price)
+
+
+def _original_dom_stop(state: TradeState) -> float:
+    if state.side == "buy":
+        if state.dom_low is not None:
+            return float(state.dom_low)
+    else:
+        if state.dom_high is not None:
+            return float(state.dom_high)
+    return float(state.sl_price)
+
+
+def _original_dom_risk(state: TradeState) -> float:
+    return abs(_original_dom_entry(state) - _original_dom_stop(state))
+
+
+def _deal_reason_text(close_deal: dict) -> str:
+    return " ".join(
+        str(close_deal.get(key) or "").upper()
+        for key in ("reason", "comment")
+    ).strip()
+
+
+def _closed_by_stop_loss(close_deal: dict, state: TradeState, preclose_status: str) -> bool:
+    reason_text = _deal_reason_text(close_deal)
+    if "DEAL_REASON_SL" in reason_text or reason_text == "SL":
+        return True
+
+    # If the trade had already moved to BE, a stop-based exit should not trigger
+    # a reversal. We only reverse the original DOM invalidation stop.
+    if preclose_status == "BE_MOVED":
+        return False
+
+    try:
+        exit_price = float(close_deal.get("price", 0) or 0)
+    except Exception:
+        return False
+
+    stop_price = _original_dom_stop(state)
+    dom_length = float(state.dom_length or 0.0)
+    tolerance = max(dom_length * 0.05, 0.5)
+    return stop_price > 0 and abs(exit_price - stop_price) <= tolerance
 
 class TradeMonitorService:
     def __init__(self):
@@ -19,7 +74,7 @@ class TradeMonitorService:
         db = SessionLocal()
         try:
             active_states = db.query(TradeState).filter(
-                TradeState.status.in_(["OPEN", "BE_MOVED"])
+                TradeState.status.in_(["OPEN", "BE_MOVED", "CLOSING"])
             ).all()
 
             for state in active_states:
@@ -27,14 +82,29 @@ class TradeMonitorService:
                     await self._process_state(db, state)
                 except Exception as e:
                     logger.error(f"Error processing TradeState {state.id}: {e}")
-            
+
+            await self._reconcile_closed_mismatches(db)
             db.commit()
         finally:
             db.close()
 
     async def _process_state(self, db, state: TradeState):
         user = db.query(User).filter(User.id == state.user_id).first()
-        if not user or not user.meta_account_id:
+        if not user:
+            return
+
+        if not getattr(user, "can_trade", True):
+            closed_count = force_close_orphaned_trades_for_user(
+                db, user.id, close_reason="ACCOUNT_INACTIVE"
+            )
+            if closed_count:
+                logger.warning(
+                    f"Force-closed {closed_count} orphaned trade(s) for inactive user {user.id}"
+                )
+            db.commit()
+            return
+
+        if not user.meta_account_id:
             return
 
         # 1. Check if position still exists on MetaApi
@@ -59,6 +129,19 @@ class TradeMonitorService:
                 return
 
             # 2. Position is OPEN. Check for Breakeven trigger.
+            trade_record = None
+            if state.position_id:
+                trade_record = db.query(Trade).filter(Trade.id == state.position_id).first()
+            if trade_record:
+                trade_record.last_synced_at = datetime.now(timezone.utc)
+                if trade_record.status == "CLOSING":
+                    trade_record.status = "OPEN"
+                    trade_record.result = "OPEN"
+
+            state.last_checked_at = datetime.now(timezone.utc)
+            if state.status == "CLOSING":
+                state.status = "OPEN"
+
             if state.status == "OPEN":
                 current_price = float(matching_pos["currentPrice"])
                 triggered = False
@@ -68,12 +151,20 @@ class TradeMonitorService:
                     triggered = True
                 
                 if triggered:
-                    logger.info(f"BE Triggered for {state.id} ({state.symbol}). Moving SL to {state.entry_price}")
-                    success = await self.engine.update_position_sl(user, matching_pos["id"], state.entry_price)
+                    dom_length = float(state.dom_length or 0.0)
+                    if dom_length <= 0 and state.be_trigger != state.entry_price:
+                        dom_length = abs(state.be_trigger - state.entry_price) / 0.35
+                    be_buffer = dom_length * BE_BUFFER_RATIO
+                    protected_sl = state.entry_price + be_buffer if state.side == "buy" else state.entry_price - be_buffer
+                    logger.info(
+                        f"BE Triggered for {state.id} ({state.symbol}). "
+                        f"Moving SL to {protected_sl}"
+                    )
+                    success = await self.engine.update_position_sl(user, matching_pos["id"], protected_sl)
                     if success:
                         state.status = "BE_MOVED"
-                        state.sl_price = state.entry_price
-                        db.commit()
+                        state.sl_price = protected_sl
+            db.commit()
 
         except Exception as e:
             logger.error(f"Failed to fetch/process MetaApi state for {state.user_id}: {e}")
@@ -84,8 +175,18 @@ class TradeMonitorService:
         """
         logger.info(f"Trade {state.id} ({state.symbol}) detected as CLOSED.")
 
+        # Idempotency guard: if trade row is already closed with exit data,
+        # do not re-apply close bookkeeping (avoids duplicate metrics/events).
+        existing_trade = db.query(Trade).filter(Trade.id == state.position_id).first() if state.position_id else None
+        if existing_trade and existing_trade.status == "CLOSED" and existing_trade.exit is not None:
+            if state.status != "REVERSED":
+                state.status = "CLOSED"
+            state.last_checked_at = datetime.now(timezone.utc)
+            db.commit()
+            return
+
         # Check history to see if it was a Loss (SL hit)
-        deals = await self.engine.get_deals(user.meta_account_id, limit=20)
+        deals = await self.engine.get_deals(user.meta_account_id, days=7)
         last_deal = next(
             (d for d in deals
              if d.get("entryType") == "DEAL_ENTRY_OUT"
@@ -99,58 +200,97 @@ class TradeMonitorService:
                 f"Position {state.position_id} not found in open positions, but no closing deal yet. "
                 f"Deferring close sync for {state.symbol}."
             )
+            if state.position_id:
+                trade_record = db.query(Trade).filter(Trade.id == state.position_id).first()
+                if trade_record:
+                    trade_record.retry_count = int(trade_record.retry_count or 0) + 1
+                    trade_record.last_synced_at = datetime.now(timezone.utc)
+            state.status = "CLOSING"
+            state.last_checked_at = datetime.now(timezone.utc)
+            db.commit()
             return
 
-        # Now safe to mark CLOSED
-        state.status = "CLOSED"
+        preclose_status = state.status
+
+        # Mark as CLOSING before final atomic close update.
+        state.status = "CLOSING"
+        state.last_checked_at = datetime.now(timezone.utc)
+        trade_record = db.query(Trade).filter(Trade.id == state.position_id).first() if state.position_id else None
+        if trade_record:
+            trade_record.status = "CLOSING"
+            trade_record.last_synced_at = datetime.now(timezone.utc)
         db.commit()
-        
-        is_loss = False
-        exit_price = None
-        pnl = 0.0
-        closed_at = None
+
         exit_price = float(last_deal.get("price", 0))
-        pnl = float(last_deal.get("profit", 0))
+        pnl = (
+            float(last_deal.get("profit", 0) or 0)
+            + float(last_deal.get("swap", 0) or 0)
+            + float(last_deal.get("commission", 0) or 0)
+        )
         is_loss = pnl < 0
-        # Capture the actual finish time from the deal
+        closed_at = None
         deal_time = last_deal.get("time")
         if deal_time:
             try:
                 closed_at = datetime.fromisoformat(deal_time.replace("Z", "+00:00"))
             except Exception:
-                closed_at = datetime.utcnow()
-        
-        # Sync back to Position table for reporting
-        if state.position_id:
-            from app.models.position import Position
-            pos = db.query(Position).filter(Position.id == state.position_id).first()
+                closed_at = datetime.now(timezone.utc)
+        if not closed_at:
+            closed_at = datetime.now(timezone.utc)
+
+        # Atomic close sync for Trade + Position + TradeState only.
+        # Analytics is best-effort and must never roll back the close itself.
+        try:
+            pos = db.query(Position).filter(Position.id == state.position_id).first() if state.position_id else None
+            trade_record = db.query(Trade).filter(Trade.id == state.position_id).first() if state.position_id else None
+
             if pos:
                 pos.status = "CLOSED"
                 pos.exit_price = exit_price
                 pos.pnl = pnl
-                pos.closed_at = closed_at or datetime.utcnow()
+                pos.closed_at = closed_at
                 logger.info(f"Synced exit data for Position {pos.id} (Price: {exit_price}, PnL: {pnl})")
-                
-                from app.models.trade import Trade
-                trade_record = db.query(Trade).filter(Trade.id == state.position_id).first()
-                if trade_record:
-                    trade_record.status = "CLOSED"
-                    trade_record.close_time = pos.closed_at
-                    trade_record.exit = exit_price
-                    trade_record.pnl = pnl
-                    logger.info(f"Synced exit data for Trade(CLOSED) {trade_record.id}")
 
-                # Update Analytics
-                AnalyticsService.update_trade_metrics(db, state.bot_slug, pnl)
-        
-        if is_loss and not state.reversal_used:
+            if trade_record:
+                trade_record.status = "CLOSED"
+                trade_record.result = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "BE")
+                trade_record.close_time = closed_at
+                trade_record.exit = exit_price
+                trade_record.pnl = pnl
+                trade_record.last_synced_at = datetime.now(timezone.utc)
+                trade_record.retry_count = 0
+                logger.info(f"Synced exit data for Trade(CLOSED) {trade_record.id}")
+
+            state.status = "CLOSED"
+            state.last_checked_at = datetime.now(timezone.utc)
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Atomic close sync failed for {state.position_id}: {e}")
+            state.status = "CLOSING"
+            state.last_checked_at = datetime.now(timezone.utc)
+            trade_record = db.query(Trade).filter(Trade.id == state.position_id).first() if state.position_id else None
+            if trade_record:
+                trade_record.status = "CLOSING"
+                trade_record.retry_count = int(trade_record.retry_count or 0) + 1
+                trade_record.last_synced_at = datetime.now(timezone.utc)
+            db.commit()
+            return
+
+        try:
+            AnalyticsService.update_trade_metrics(db, state.bot_slug, pnl, autocommit=True)
+        except Exception as e:
+            logger.error(f"Analytics update skipped for closed trade {state.position_id}: {e}")
+
+        closed_by_sl = _closed_by_stop_loss(last_deal, state, preclose_status)
+
+        if is_loss and closed_by_sl and preclose_status != "BE_MOVED" and not state.reversal_used:
             # TRIGGER REVERSAL — only for DOM trades
             if state.bot_slug in ["dm-bull", "dm-bear", "dominance-bull", "dominance-bear", "dominance_crypto"]:
                 await self._trigger_reversal(db, state, user)
                 state.status = "REVERSED"
-            # else: already CLOSED from the early commit above
-
-        db.commit()
+                state.last_checked_at = datetime.now(timezone.utc)
+                db.commit()
 
     async def _trigger_reversal(self, db, state: TradeState, user: User):
         # Double check reversal_used again (Safety Guard 1)
@@ -169,33 +309,25 @@ class TradeMonitorService:
         logger.info(f"🔄 Triggering REVERSAL for {state.user_id} on {state.symbol}")
         
         reverse_side = "sell" if state.side == "buy" else "buy"
-        
-        # Calculate Reversal Parameters
-        # For BUY Reversal (SELL): SL = dom_high, TP = dom_low - dom_length
-        # We need dom_high/low/length. We can derive them from original state.
-        # Original BUY SL was dom_low. Original TP was dom_high + dom_length.
-        # This implies:
-        # dom_low = state.sl_price
-        # dom_length = (state.tp_price - state.entry_price) # Rough, if it was 1:1
-        # Correct way: pass it in? No, let's derive or use local logic.
-        
-        # In trade_manager.py we saved them to state. 
-        # Let's assume we can get dom_length from (state.be_trigger - state.entry_price) / 0.35
-        dom_length = (state.be_trigger - state.entry_price) / 0.35 if state.side == "buy" else (state.entry_price - state.be_trigger) / 0.35
-        dom_length = abs(dom_length)
-        
-        if reverse_side == "sell":
-            # State was BUY. dom_low = state.sl_price. dom_high = dom_low + dom_length.
-            dom_low = state.sl_price
-            dom_high = dom_low + dom_length
-            sl = dom_high
-            tp = dom_low - dom_length
-        else:
-            # State was SELL. dom_high = state.sl_price. dom_low = dom_high - dom_length.
-            dom_high = state.sl_price
-            dom_low = dom_high - dom_length
-            sl = dom_low
-            tp = dom_high + dom_length
+        original_entry = _original_dom_entry(state)
+        original_stop = _original_dom_stop(state)
+        original_risk = _original_dom_risk(state)
+
+        if original_risk <= 0:
+            logger.warning(f"Reversal aborted for {state.id}: could not derive original DOM risk")
+            return
+
+        # Reversal is defined as a true 1:1 trade after the original DOM SL is hit:
+        # - the reversal SL is anchored to the original DOM close/entry
+        # - TP is projected exactly one risk unit away from the actual reversal fill
+        #   (after we fetch the broker fill below)
+        expected_reverse_entry = original_stop
+        reversal_sl = original_entry
+        provisional_tp = (
+            expected_reverse_entry - original_risk
+            if reverse_side == "sell"
+            else expected_reverse_entry + original_risk
+        )
 
         # Best-effort: reuse original trade volume when available.
         reverse_volume = 0.01
@@ -210,9 +342,9 @@ class TradeMonitorService:
         reverse_trade = {
             "symbol": state.symbol,
             "side": reverse_side,
-            "entry": 0, # Market execution (we will fill actual entry from MetaApi positions)
-            "sl": sl,
-            "tp": tp,
+            "entry": expected_reverse_entry,
+            "sl": reversal_sl,
+            "tp": provisional_tp,
             "be_trigger": 0,
             "volume": reverse_volume,
         }
@@ -244,9 +376,36 @@ class TradeMonitorService:
                 logger.warning(f"Failed to fetch reversal position entry price: {e}")
 
             if not entry_price:
-                entry_price = state.entry_price
+                entry_price = expected_reverse_entry
 
-            be_trigger = entry_price + (dom_length * 0.35) if reverse_side == "buy" else entry_price - (dom_length * 0.35)
+            actual_risk = abs(entry_price - reversal_sl)
+            if actual_risk <= 0:
+                logger.warning(f"Reversal aborted for {state.id}: invalid actual reversal risk")
+                return
+
+            exact_tp = (
+                entry_price - actual_risk
+                if reverse_side == "sell"
+                else entry_price + actual_risk
+            )
+            be_trigger = (
+                entry_price + (actual_risk * 0.35)
+                if reverse_side == "buy"
+                else entry_price - (actual_risk * 0.35)
+            )
+
+            updated_stops = await self.engine.update_position_stops(
+                user,
+                pos_id,
+                reversal_sl,
+                exact_tp,
+            )
+            if not updated_stops:
+                logger.warning(
+                    f"Failed to normalize reversal stops for {pos_id}. "
+                    f"Keeping provisional SL/TP sl={reversal_sl} tp={provisional_tp}"
+                )
+                exact_tp = provisional_tp
 
             # Mark original as reversal_used
             state.reversal_used = True
@@ -260,8 +419,8 @@ class TradeMonitorService:
                     "symbol": state.symbol,
                     "side": reverse_side,
                     "entry": entry_price,
-                    "sl": sl,
-                    "tp": tp,
+                    "sl": reversal_sl,
+                    "tp": exact_tp,
                     "be_trigger": be_trigger,
                     "is_reversal": True,
                     "status": "OPEN",
@@ -279,7 +438,7 @@ class TradeMonitorService:
                     entry=entry_price,
                     lot_size=reverse_volume,
                     execution_time=datetime.now(timezone.utc),
-                    status="EXECUTED",
+                    status="OPEN",
                     result="OPEN",
                     metaapi_trade_id=pos_id,
                 ))
@@ -294,12 +453,101 @@ class TradeMonitorService:
                 position_id=pos_id,
                 bot_slug=state.bot_slug,
                 entry_price=entry_price,
-                sl_price=reverse_trade["sl"],
-                tp_price=reverse_trade["tp"],
+                sl_price=reversal_sl,
+                tp_price=exact_tp,
                 be_trigger=be_trigger,
+                dom_high=state.dom_high,
+                dom_low=state.dom_low,
+                dom_close=original_entry,
+                dom_length=actual_risk,
                 side=reverse_trade["side"],
                 status="OPEN",
                 reversal_used=True # Reversal can only happen once
             )
             db.add(ts)
             logger.info(f"Successfully fired REVERSAL trade for {user.id}")
+
+    async def _reconcile_closed_mismatches(self, db):
+        """
+        Safety net: backfill trades/positions that are CLOSED in TradeState
+        but still OPEN/CLOSING in reporting tables.
+        """
+        rows = db.query(TradeState, Trade).join(
+            Trade, Trade.id == TradeState.position_id
+        ).filter(
+            TradeState.status.in_(["CLOSED", "REVERSED"]),
+            Trade.status.in_(["OPEN", "CLOSING"])
+        ).limit(100).all()
+
+        if not rows:
+            return
+
+        user_rows = defaultdict(list)
+        for state, trade in rows:
+            user_rows[state.user_id].append((state, trade))
+
+        for user_id, pairs in user_rows.items():
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                continue
+
+            if not getattr(user, "can_trade", True):
+                closed_count = force_close_orphaned_trades_for_user(
+                    db, user.id, close_reason="ACCOUNT_INACTIVE"
+                )
+                if closed_count:
+                    logger.warning(
+                        f"Reconciliation force-closed {closed_count} orphaned trade(s) for inactive user {user.id}"
+                    )
+                continue
+
+            if not user.meta_account_id:
+                continue
+
+            deals = await self.engine.get_deals(user.meta_account_id, days=30)
+            close_by_pos = {}
+            for d in deals:
+                if d.get("entryType") != "DEAL_ENTRY_OUT":
+                    continue
+                close_by_pos[str(d.get("positionId"))] = d
+
+            for state, trade in pairs:
+                close_deal = close_by_pos.get(str(state.position_id))
+                if not close_deal:
+                    continue
+                try:
+                    exit_price = float(close_deal.get("price", 0))
+                    pnl = (
+                        float(close_deal.get("profit", 0) or 0)
+                        + float(close_deal.get("swap", 0) or 0)
+                        + float(close_deal.get("commission", 0) or 0)
+                    )
+                    deal_time = close_deal.get("time")
+                    closed_at = datetime.now(timezone.utc)
+                    if deal_time:
+                        try:
+                            closed_at = datetime.fromisoformat(deal_time.replace("Z", "+00:00"))
+                        except Exception:
+                            pass
+
+                    pos = db.query(Position).filter(Position.id == state.position_id).first()
+                    if pos:
+                        pos.status = "CLOSED"
+                        pos.exit_price = exit_price
+                        pos.pnl = pnl
+                        pos.closed_at = closed_at
+
+                    trade.status = "CLOSED"
+                    trade.result = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "BE")
+                    trade.exit = exit_price
+                    trade.pnl = pnl
+                    trade.close_time = closed_at
+                    trade.last_synced_at = datetime.now(timezone.utc)
+                    trade.retry_count = 0
+
+                    if state.status == "CLOSING":
+                        state.status = "CLOSED"
+                    state.last_checked_at = datetime.now(timezone.utc)
+                    logger.info(f"Reconciled stale close for position {state.position_id}")
+                except Exception as e:
+                    logger.error(f"Reconciliation failed for position {state.position_id}: {e}")

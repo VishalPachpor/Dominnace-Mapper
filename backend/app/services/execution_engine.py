@@ -32,15 +32,13 @@ class ExecutionEngine:
         symbol = trade_dict["symbol"]
         side = trade_dict["side"]
         from app.services.metaapi_service import resolve_symbol as canonicalize_symbol
-        
+        from app.config import MAX_POSITION_SIZE, ALLOWED_SYMBOLS
+
         # ── Critical Protection: Position Risk Guard ─────────────────────────
-        # Enforce maximum safety lot size natively
-        MAX_SAFE_LOT = 0.10
         requested_volume = float(trade_dict.get("volume", 0.01))
-        volume = min(requested_volume, MAX_SAFE_LOT)
-        
+        volume = min(requested_volume, MAX_POSITION_SIZE)
+
         # ── Critical Protection: Symbol Whitelist ────────────────────────────
-        ALLOWED_SYMBOLS = ["XAUUSD", "EURUSD", "GBPUSD", "BTCUSD", "ETHUSD", "US30", "NAS100", "BTCUSDT", "ETHUSDT"]
         if symbol not in ALLOWED_SYMBOLS and canonicalize_symbol(symbol) not in ALLOWED_SYMBOLS:
             logger.warning(f"Rejected trade: Symbol {symbol} not in ALLOWED_SYMBOLS whitelist.")
             return {"status": "rejected", "reason": "unauthorized_symbol"}
@@ -110,6 +108,11 @@ class ExecutionEngine:
         from app.services.metaapi_service import update_position_sl
         return await update_position_sl(user.meta_account_id, position_id, new_sl)
 
-    async def get_deals(self, account_id: str, limit: int = 10):
+    async def update_position_stops(self, user, position_id: str, new_sl=None, new_tp=None):
+        from app.services.metaapi_service import update_position_stops
+        return await update_position_stops(user.meta_account_id, position_id, new_sl, new_tp)
+
+    async def get_deals(self, account_id: str, days: int = 7):
+        """Fetch deal history from MetaApi. `days` controls the lookback window."""
         from app.services.metaapi_service import get_deal_history
-        return await get_deal_history(account_id)
+        return await get_deal_history(account_id, days=days)

@@ -71,16 +71,14 @@ def get_user_strategies(current_user: User = Depends(get_current_user), db: Sess
     Returns a dynamic list of strategies available based on the user's current plan.
     Includes 'is_enabled' status for each bot.
     """
-    # 1. Get user's plan
-    if not current_user.plan_id:
-        # Fallback to Starter if no plan assigned
+    # 1. Resolve user's plan (use Starter as default without mutating the user row in a GET)
+    plan_id = current_user.plan_id
+    if not plan_id:
         starter = db.query(Plan).filter(Plan.name == "Starter").first()
-        if starter:
-            current_user.plan_id = starter.id
-            db.commit()
-    
+        plan_id = starter.id if starter else None
+
     # 2. Get allowed bot IDs from plan_strategies
-    allowed_bot_ids = db.query(PlanStrategy.bot_id).filter(PlanStrategy.plan_id == current_user.plan_id).all()
+    allowed_bot_ids = db.query(PlanStrategy.bot_id).filter(PlanStrategy.plan_id == plan_id).all()
     allowed_bot_ids = [b[0] for b in allowed_bot_ids]
     
     # 3. Get the bots

@@ -11,6 +11,7 @@ interface ConfirmModalProps {
     cancelLabel?: string;
     variant?: "danger" | "warning";
     loading?: boolean;
+    loadingLabel?: string;
     onConfirm: () => void;
     onCancel: () => void;
 }
@@ -24,6 +25,7 @@ export default function ConfirmModal({
     cancelLabel = "Cancel",
     variant = "danger",
     loading = false,
+    loadingLabel = "Working…",
     onConfirm,
     onCancel,
 }: ConfirmModalProps) {
@@ -116,7 +118,7 @@ export default function ConfirmModal({
                         {loading ? (
                             <>
                                 <span className="material-symbols-outlined text-sm animate-spin">progress_activity</span>
-                                Closing…
+                                {loadingLabel}
                             </>
                         ) : (
                             confirmLabel

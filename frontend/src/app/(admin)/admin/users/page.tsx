@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import api from "@/services/api";
+import { formatIstDate } from "@/utils/ist";
 
 interface AdminUser {
     id: string;
@@ -124,10 +125,10 @@ export default function AdminUsers() {
                                         <td className="py-4 px-6 text-right">
                                             <div className="flex flex-col items-end">
                                                 <span className="text-[10px] text-on-surface-variant font-mono">
-                                                    Last: {u.last_login ? new Date(u.last_login).toLocaleDateString() : "Never"}
+                                                    Last: {u.last_login ? formatIstDate(u.last_login) : "Never"}
                                                 </span>
                                                 <span className="text-[10px] text-on-surface-variant font-mono">
-                                                    Join: {u.created_at ? new Date(u.created_at).toLocaleDateString() : "N/A"}
+                                                    Join: {u.created_at ? formatIstDate(u.created_at) : "N/A"}
                                                 </span>
                                             </div>
                                         </td>

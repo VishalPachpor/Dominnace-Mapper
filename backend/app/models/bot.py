@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Float, Boolean, ForeignKey, DateTime, Integer, UniqueConstraint
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from app.database.db import Base
@@ -18,7 +18,7 @@ class Bot(Base):
     symbol = Column(String, nullable=True)
     max_lot_size = Column(Float, default=0.01)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     user_subscriptions = relationship("UserBot", back_populates="bot", cascade="all, delete-orphan")
@@ -32,7 +32,7 @@ class UserBot(Base):
     bot_id = Column(String, ForeignKey("bots.id", ondelete="CASCADE"), nullable=False, index=True)
     is_enabled = Column(Boolean, default=True)
     custom_lot_size = Column(Float, nullable=True) # Optional override
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         UniqueConstraint('user_id', 'bot_id', name='uix_user_bot'),

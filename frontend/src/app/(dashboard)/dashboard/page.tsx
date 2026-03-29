@@ -22,6 +22,12 @@ interface LivePosition {
     volume: number;
 }
 
+interface MtConnectionState {
+    mt_status: string;
+    can_trade?: boolean;
+    meta_account_id?: string | null;
+}
+
 export default function Dashboard() {
     const [stats, setStats] = useState<DashboardStats>({
         account_balance: 0,
@@ -32,19 +38,28 @@ export default function Dashboard() {
         equity_curve: [],
     });
     const [positions, setPositions] = useState<LivePosition[]>([]);
+    const [mtState, setMtState] = useState<MtConnectionState>({
+        mt_status: "disconnected",
+        can_trade: true,
+        meta_account_id: null,
+    });
     const [loading, setLoading] = useState(true);
 
     const fetchData = useCallback(async () => {
         try {
-            const [dashRes, posRes] = await Promise.allSettled([
-                api.get("/trades/dashboard"),
-                api.get("/positions"),
+            const [dashRes, posRes, mtRes] = await Promise.allSettled([
+                api.get("/trades/dashboard", { params: { _ts: Date.now() } }),
+                api.get("/positions", { params: { _ts: Date.now() } }),
+                api.get("/users/mt-status", { params: { _ts: Date.now() } }),
             ]);
 
             if (dashRes.status === "fulfilled") setStats(dashRes.value.data);
             if (posRes.status === "fulfilled") {
                 const posData = posRes.value.data;
                 setPositions(Array.isArray(posData) ? posData : []);
+            }
+            if (mtRes.status === "fulfilled") {
+                setMtState(mtRes.value.data || { mt_status: "disconnected" });
             }
         } catch (err) {
             console.error("Dashboard fetch failed", err);
@@ -59,17 +74,43 @@ export default function Dashboard() {
         return () => clearInterval(interval);
     }, [fetchData]);
 
+    useEffect(() => {
+        const onAccountStatusChanged = () => {
+            setLoading(true);
+            fetchData();
+        };
+        window.addEventListener("dm:account-status-changed", onAccountStatusChanged);
+        return () => window.removeEventListener("dm:account-status-changed", onAccountStatusChanged);
+    }, [fetchData]);
+
     const fmt = (n: number) =>
         n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const hasLinkedMtAccount = Boolean(mtState.meta_account_id);
+    const isInactiveAccount = mtState.can_trade === false && hasLinkedMtAccount;
+    const visiblePositions = isInactiveAccount ? [] : positions;
 
     return (
         <div className="flex flex-col gap-6">
+            {isInactiveAccount && (
+                <div className="p-4 rounded-xl border border-tertiary/30 bg-tertiary-container/10">
+                    <div className="flex items-start gap-3">
+                        <span className="material-symbols-outlined text-tertiary">warning</span>
+                        <div>
+                            <p className="text-sm font-bold text-tertiary">Account Inactive</p>
+                            <p className="text-xs text-on-surface-variant mt-1">
+                                Trading is paused because your linked account is inactive or expired. Metrics shown below are historical from your last active session.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* ─── 5-Column Stat Grid ─── */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 {/* Total Balance */}
-                <div className="bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 border-primary/10">
+                <div className={`bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 ${isInactiveAccount ? "border-outline-variant/30 opacity-80" : "border-primary/10"}`}>
                     <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">
-                        Total Balance
+                        {isInactiveAccount ? "Last Known Balance" : "Total Balance"}
                     </span>
                     <div className="mt-2 flex items-baseline gap-1">
                         <span className="text-xl font-bold text-on-surface">
@@ -82,9 +123,9 @@ export default function Dashboard() {
                 </div>
 
                 {/* Daily PnL */}
-                <div className="bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 border-secondary/10">
+                <div className={`bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 ${isInactiveAccount ? "border-outline-variant/30 opacity-80" : "border-secondary/10"}`}>
                     <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">
-                        Daily PnL
+                        {isInactiveAccount ? "Historical PnL" : "Daily PnL"}
                     </span>
                     <div className="mt-2 flex items-center gap-2">
                         <span className={`text-xl font-bold ${stats.total_pnl >= 0 ? "text-secondary" : "text-tertiary"}`}>
@@ -94,22 +135,28 @@ export default function Dashboard() {
                 </div>
 
                 {/* Open Profit */}
-                <div className="bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 border-tertiary/10">
+                <div className={`bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 ${isInactiveAccount ? "border-outline-variant/30 opacity-80" : "border-tertiary/10"}`}>
                     <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">
-                        Open Profit
+                        {isInactiveAccount ? "Live Open PnL (Paused)" : "Open Profit"}
                     </span>
                     <div className="mt-2 flex items-center gap-2">
-                        <span className={`text-xl font-bold ${stats.unrealized_pnl >= 0 ? "text-secondary" : "text-tertiary"}`}>
-                            {stats.unrealized_pnl >= 0 ? "+" : ""}${fmt(Math.abs(stats.unrealized_pnl))}
-                        </span>
-                        <span className={`material-symbols-outlined text-sm ${stats.unrealized_pnl >= 0 ? "text-secondary" : "text-tertiary"}`}>
-                            {stats.unrealized_pnl >= 0 ? "trending_up" : "trending_down"}
-                        </span>
+                        {isInactiveAccount ? (
+                            <span className="text-xl font-bold text-on-surface-variant">--</span>
+                        ) : (
+                            <>
+                                <span className={`text-xl font-bold ${stats.unrealized_pnl >= 0 ? "text-secondary" : "text-tertiary"}`}>
+                                    {stats.unrealized_pnl >= 0 ? "+" : ""}${fmt(Math.abs(stats.unrealized_pnl))}
+                                </span>
+                                <span className={`material-symbols-outlined text-sm ${stats.unrealized_pnl >= 0 ? "text-secondary" : "text-tertiary"}`}>
+                                    {stats.unrealized_pnl >= 0 ? "trending_up" : "trending_down"}
+                                </span>
+                            </>
+                        )}
                     </div>
                 </div>
 
                 {/* Win Rate */}
-                <div className="bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 border-primary/10">
+                <div className={`bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 ${isInactiveAccount ? "border-outline-variant/30 opacity-80" : "border-primary/10"}`}>
                     <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">
                         Win Rate %
                     </span>
@@ -127,17 +174,19 @@ export default function Dashboard() {
                 </div>
 
                 {/* Active Trades */}
-                <div className="bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 border-secondary/10">
+                <div className={`bg-surface-container p-4 rounded-lg flex flex-col justify-between border-b-2 ${isInactiveAccount ? "border-outline-variant/30 opacity-80" : "border-secondary/10"}`}>
                     <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">
                         Active Trades
                     </span>
                     <div className="mt-2 flex items-center gap-2">
                         <span className="text-xl font-bold text-on-surface">
-                            {stats.active_trades}
+                            {isInactiveAccount ? 0 : stats.active_trades}
                         </span>
-                        <span className="material-symbols-outlined text-secondary text-lg" style={{ fontVariationSettings: "'FILL' 1" }}>
-                            speed
-                        </span>
+                        {!isInactiveAccount && (
+                            <span className="material-symbols-outlined text-secondary text-lg" style={{ fontVariationSettings: "'FILL' 1" }}>
+                                speed
+                            </span>
+                        )}
                     </div>
                 </div>
             </div>
@@ -150,7 +199,9 @@ export default function Dashboard() {
                         <div>
                             <h2 className="text-lg font-bold text-on-surface">Performance Curve</h2>
                             <p className="text-xs text-on-surface-variant">
-                                Cumulative Equity Growth ({stats.equity_curve.length} points)
+                                {isInactiveAccount
+                                    ? `Historical equity curve (inactive account) (${stats.equity_curve.length} points)`
+                                    : `Cumulative Equity Growth (${stats.equity_curve.length} points)`}
                             </p>
                         </div>
                         {stats.equity_curve.length > 0 && (
@@ -178,11 +229,11 @@ export default function Dashboard() {
                 {/* Active Trades Panel — Now Live */}
                 <div className="lg:col-span-4 bg-surface-container-low rounded-xl flex flex-col overflow-hidden">
                     <div className="p-6 border-b border-outline-variant/10 flex items-center justify-between">
-                        <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface">Active Trades</h2>
-                        <span className="px-2 py-0.5 bg-surface-container-high rounded text-[10px] font-mono text-on-surface-variant">
-                            {positions.length} TOTAL
-                        </span>
-                    </div>
+                            <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface">Active Trades</h2>
+                            <span className="px-2 py-0.5 bg-surface-container-high rounded text-[10px] font-mono text-on-surface-variant">
+                                {visiblePositions.length} TOTAL
+                            </span>
+                        </div>
                     <div className="flex-1 overflow-y-auto custom-scrollbar">
                         <table className="w-full text-left">
                             <thead>
@@ -193,14 +244,14 @@ export default function Dashboard() {
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-outline-variant/5">
-                                {positions.length === 0 ? (
+                                {visiblePositions.length === 0 ? (
                                     <tr>
                                         <td colSpan={3} className="py-12 text-center text-sm text-on-surface-variant">
-                                            No active trades right now.
+                                            {isInactiveAccount ? "Account inactive. Live positions are paused." : "No active trades right now."}
                                         </td>
                                     </tr>
                                 ) : (
-                                    positions.map((p, i) => (
+                                    visiblePositions.map((p, i) => (
                                         <tr key={p.id || i} className="hover:bg-surface-container-high/50 transition-colors">
                                             <td className="py-3 px-6">
                                                 <span className="text-sm font-bold text-on-surface">{p.symbol}</span>
@@ -247,7 +298,9 @@ export default function Dashboard() {
                     </div>
                     <h3 className="text-sm font-bold text-on-surface mb-1">Risk Monitor</h3>
                     <p className="text-xs text-on-surface-variant leading-relaxed">
-                        {stats.active_trades > 0
+                        {isInactiveAccount
+                            ? "Trading is paused while this account is inactive. Connect or replace the MT5 account to resume live execution."
+                            : stats.active_trades > 0
                             ? `${stats.active_trades} active position(s). Unrealized PnL: ${stats.unrealized_pnl >= 0 ? "+" : ""}$${fmt(Math.abs(stats.unrealized_pnl))}.`
                             : "No active positions. Risk exposure is zero."}
                     </p>
@@ -259,8 +312,8 @@ export default function Dashboard() {
                     </div>
                     <h3 className="text-sm font-bold text-on-surface mb-1">Performance Summary</h3>
                     <p className="text-xs text-on-surface-variant leading-relaxed">
-                        Win rate: {stats.win_rate}%. Total closed PnL: {stats.total_pnl >= 0 ? "+" : ""}${fmt(Math.abs(stats.total_pnl))}.
-                        Balance: ${fmt(stats.account_balance)}.
+                        Win rate: {stats.win_rate}%. Total closed PnL: {stats.total_pnl >= 0 ? "+" : ""}${fmt(Math.abs(stats.total_pnl))}.{" "}
+                        {isInactiveAccount ? "Last known balance" : "Balance"}: ${fmt(stats.account_balance)}.
                     </p>
                 </div>
                 <div className="bg-surface-container-low p-6 rounded-xl border border-outline-variant/5">

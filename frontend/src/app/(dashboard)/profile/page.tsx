@@ -18,6 +18,7 @@ interface UserProfile {
     mt_server: string | null;
     mt_broker: string | null;
     mt_status: string;
+    can_trade: boolean;
     ea_token_active: boolean;
 }
 
@@ -25,6 +26,12 @@ export default function ProfilePage() {
     const [profile, setProfile] = useState<UserProfile | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+
+    const showToast = (msg: string, type: "success" | "error" = "success") => {
+        setToast({ msg, type });
+        setTimeout(() => setToast(null), 4000);
+    };
 
     // Form states
     const [fullName, setFullName] = useState("");
@@ -60,9 +67,9 @@ export default function ProfilePage() {
                 push_notifications: pushNotifs,
             });
             setProfile((prev) => (prev ? { ...prev, full_name: fullName } : null));
-            alert("Profile updated successfully!");
+            showToast("Profile updated successfully!");
         } catch {
-            alert("Failed to update profile.");
+            showToast("Failed to update profile.", "error");
         } finally {
             setSaving(false);
         }
@@ -75,9 +82,9 @@ export default function ProfilePage() {
             setProfile((prev) =>
                 prev ? { ...prev, has_binance_key: false, binance_api_key_last4: null } : null
             );
-            alert("Binance keys revoked.");
+            showToast("Binance keys revoked.");
         } catch {
-            alert("Failed to revoke keys.");
+            showToast("Failed to revoke keys.", "error");
         }
     };
 
@@ -87,12 +94,21 @@ export default function ProfilePage() {
             await api.delete("/users/api-key/mt5");
             setProfile((prev) =>
                 prev
-                    ? { ...prev, has_mt5_key: false, mt_login: null, mt_server: null, mt_status: "disconnected" }
+                    ? {
+                          ...prev,
+                          has_mt5_key: false,
+                          mt_login: null,
+                          mt_server: null,
+                          mt_broker: null,
+                          mt_status: "disconnected",
+                          can_trade: false,
+                      }
                     : null
             );
-            alert("MT5 account disconnected.");
+            window.dispatchEvent(new Event("dm:account-status-changed"));
+            showToast("MT5 account disconnected.");
         } catch {
-            alert("Failed to disconnect MT5.");
+            showToast("Failed to disconnect MT5.", "error");
         }
     };
 
@@ -111,12 +127,16 @@ export default function ProfilePage() {
     const oauthLabel =
         profile?.oauth_provider === "google"
             ? "Google"
-            : profile?.oauth_provider === "apple"
-            ? "Apple"
             : null;
 
     return (
         <div className="flex flex-col gap-8">
+            {/* Toast notification */}
+            {toast && (
+                <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium transition-all ${toast.type === "error" ? "bg-tertiary-container text-on-tertiary-container" : "bg-secondary-container text-on-secondary-container"}`}>
+                    {toast.msg}
+                </div>
+            )}
             <div className="flex items-center justify-between">
                 <div>
                     <h1 className="text-3xl font-headline font-bold text-on-surface tracking-tight">
@@ -167,11 +187,6 @@ export default function ProfilePage() {
                                                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
                                                 fill="#EA4335"
                                             />
-                                        </svg>
-                                    )}
-                                    {profile?.oauth_provider === "apple" && (
-                                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
-                                            <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
                                         </svg>
                                     )}
                                     <span className="text-[8px] font-bold text-on-surface-variant uppercase tracking-wider">
@@ -349,15 +364,20 @@ export default function ProfilePage() {
                                             className="w-full bg-surface-container border border-outline-variant/15 text-sm px-4 py-3 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 rounded-lg transition-all"
                                         />
                                         <button
-                                            onClick={() => {
+                                            onClick={async () => {
                                                 const pw = (
                                                     document.getElementById("new_password") as HTMLInputElement
                                                 ).value;
-                                                if (pw) {
-                                                    alert("Password updated successfully!");
-                                                    (
-                                                        document.getElementById("new_password") as HTMLInputElement
-                                                    ).value = "";
+                                                if (!pw || pw.length < 6) {
+                                                    showToast("Password must be at least 6 characters.", "error");
+                                                    return;
+                                                }
+                                                try {
+                                                    await api.put("/users/me/password", { password: pw });
+                                                    showToast("Password updated successfully!");
+                                                    (document.getElementById("new_password") as HTMLInputElement).value = "";
+                                                } catch {
+                                                    showToast("Failed to update password.", "error");
                                                 }
                                             }}
                                             className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] text-primary font-bold uppercase tracking-widest hover:text-primary-fixed transition-colors"
@@ -472,17 +492,26 @@ export default function ProfilePage() {
                                             </span>
                                             <span
                                                 className={`px-2 py-0.5 text-[8px] font-bold uppercase rounded ${
-                                                    profile.mt_status === "connected"
+                                                    profile.mt_status === "connected" && profile.can_trade
                                                         ? "bg-secondary-container/20 text-secondary"
+                                                        : profile.mt_status === "connected" && !profile.can_trade
+                                                        ? "bg-tertiary-container/20 text-tertiary"
                                                         : "bg-surface-container-highest text-on-surface-variant"
                                                 }`}
                                             >
-                                                {profile.mt_status}
+                                                {profile.mt_status === "connected" && !profile.can_trade
+                                                    ? "inactive"
+                                                    : profile.mt_status}
                                             </span>
                                         </div>
                                         <p className="text-[10px] font-mono text-on-surface-variant mt-2 tracking-wider">
                                             LOGIN: {profile.mt_login} • {profile.mt_server}
                                         </p>
+                                        {profile.mt_status === "connected" && !profile.can_trade && (
+                                            <p className="text-[10px] text-tertiary mt-2">
+                                                Trading is blocked for this account. Replace connection from Settings.
+                                            </p>
+                                        )}
                                     </div>
                                     <button
                                         onClick={handleRevokeMT5}

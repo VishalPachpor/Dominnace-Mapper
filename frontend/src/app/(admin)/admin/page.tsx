@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import api from "@/services/api";
 import Link from "next/link";
+import { formatIstTime } from "@/utils/ist";
 
 interface SystemStatus {
     health: {
@@ -174,7 +175,7 @@ export default function AdminOverview() {
                                                 {t.pnl ? `${t.pnl > 0 ? "+" : ""}${t.pnl.toFixed(2)}` : "-"}
                                             </td>
                                             <td className="py-4 px-6 text-right text-[10px] text-on-surface-variant font-mono">
-                                                {new Date(t.created_at).toLocaleTimeString()}
+                                                {formatIstTime(t.created_at).slice(0, 5)}
                                             </td>
                                         </tr>
                                     ))}
