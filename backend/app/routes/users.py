@@ -17,14 +17,14 @@ async def _refresh_user_mt_state(user, db: Session):
     """
     meta_account_id = getattr(user, "meta_account_id", None)
     if not meta_account_id:
-        if user.mt_status != "disconnected" or getattr(user, "can_trade", True):
+        if user.mt_status != "disconnected" or getattr(user, "can_trade", False):
             user.mt_status = "disconnected"
             user.can_trade = False
             db.commit()
         return user
 
     try:
-        from app.services.metaapi_service import get_account_status, get_account_information
+        from app.services.metaapi_service import get_account_status, get_account_information, find_existing_account
 
         live_status = await get_account_status(meta_account_id, use_cache=False)
         if live_status in ("CONNECTED", "DEPLOYED"):
@@ -36,10 +36,30 @@ async def _refresh_user_mt_state(user, db: Session):
                 )
                 if has_valid_data:
                     # Account is live with real data — the transient pause reason no longer applies
+                    old_account_id = getattr(user, "meta_account_id", None)
                     user.trading_paused = False
                     user.mt_status = "connected"
                     user.can_trade = True
                     db.commit()
+                    logger.info(
+                        "metaapi_rebind %s",
+                        {
+                            "user_id": user.id,
+                            "old_account_id": old_account_id,
+                            "new_account_id": user.meta_account_id,
+                            "login": user.mt_login,
+                            "server": user.mt_server,
+                            "reason": "healthy_account_data_auto_recover",
+                        },
+                        extra={
+                            "user_id": user.id,
+                            "old_account_id": old_account_id,
+                            "new_account_id": user.meta_account_id,
+                            "login": user.mt_login,
+                            "server": user.mt_server,
+                            "reason": "healthy_account_data_auto_recover",
+                        }
+                    )
                     logger.info(
                         f"Auto-recovered trading_paused for user {user.id}: "
                         f"account healthy (balance={account_info.get('balance')}, equity={account_info.get('equity')})"
@@ -47,7 +67,7 @@ async def _refresh_user_mt_state(user, db: Session):
                     return user
                 else:
                     # Paused AND no account data — stay non-tradable
-                    changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
+                    changed = user.mt_status != "connected" or getattr(user, "can_trade", False) is not False
                     user.mt_status = "connected"
                     user.can_trade = False
                     if changed:
@@ -60,7 +80,50 @@ async def _refresh_user_mt_state(user, db: Session):
                 account_info.get(key) is not None for key in ("balance", "equity", "marginFree", "freeMargin")
             )
             if not has_account_data:
-                changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
+                # The linked MetaApi terminal may be a stale duplicate. Try to switch
+                # the user to a healthier sibling account for the same MT5 login/server.
+                if getattr(user, "mt_login", None) and getattr(user, "mt_server", None):
+                    replacement = await find_existing_account(
+                        user.mt_login,
+                        user.mt_server,
+                        preferred_account_id=meta_account_id,
+                    )
+                    replacement_id = replacement.get("account_id") if replacement else None
+                    if replacement_id and replacement_id != meta_account_id:
+                        old_account_id = meta_account_id
+                        user.meta_account_id = replacement_id
+                        meta_account_id = replacement_id
+                        live_status = await get_account_status(meta_account_id, use_cache=False)
+                        account_info = await get_account_information(meta_account_id)
+                        has_account_data = isinstance(account_info, dict) and any(
+                            account_info.get(key) is not None for key in ("balance", "equity", "marginFree", "freeMargin")
+                        )
+                        logger.info(
+                            "metaapi_rebind %s",
+                            {
+                                "user_id": user.id,
+                                "old_account_id": old_account_id,
+                                "new_account_id": replacement_id,
+                                "login": user.mt_login,
+                                "server": user.mt_server,
+                                "reason": "health_score",
+                            },
+                            extra={
+                                "user_id": user.id,
+                                "old_account_id": old_account_id,
+                                "new_account_id": replacement_id,
+                                "login": user.mt_login,
+                                "server": user.mt_server,
+                                "reason": "health_score",
+                            }
+                        )
+                        logger.info(
+                            f"Switched user {user.id} to healthier MetaApi account {replacement_id} "
+                            f"for login={user.mt_login}"
+                        )
+
+            if not has_account_data:
+                changed = user.mt_status != "connected" or getattr(user, "can_trade", False) is not False
                 user.mt_status = "connected"
                 user.can_trade = False
                 if changed:
@@ -70,13 +133,53 @@ async def _refresh_user_mt_state(user, db: Session):
                     )
                 return user
 
-            if user.mt_status != "connected" or not getattr(user, "can_trade", True):
+            if user.mt_status != "connected" or not getattr(user, "can_trade", False):
                 user.mt_status = "connected"
                 user.can_trade = True
                 db.commit()
             return user
 
         # Any non-live broker state means the account should not be tradable.
+        if getattr(user, "mt_login", None) and getattr(user, "mt_server", None):
+            replacement = await find_existing_account(
+                user.mt_login,
+                user.mt_server,
+                preferred_account_id=meta_account_id,
+            )
+            replacement_id = replacement.get("account_id") if replacement else None
+            replacement_state = replacement.get("state") if replacement else None
+            if replacement_id and replacement_id != meta_account_id and replacement_state in ("CONNECTED", "DEPLOYED"):
+                old_account_id = meta_account_id
+                user.meta_account_id = replacement_id
+                user.mt_status = "connected"
+                user.can_trade = True
+                user.trading_paused = False
+                db.commit()
+                logger.info(
+                    "metaapi_rebind %s",
+                    {
+                        "user_id": user.id,
+                        "old_account_id": old_account_id,
+                        "new_account_id": replacement_id,
+                        "login": user.mt_login,
+                        "server": user.mt_server,
+                        "reason": "recover_from_stale_terminal",
+                    },
+                    extra={
+                        "user_id": user.id,
+                        "old_account_id": old_account_id,
+                        "new_account_id": replacement_id,
+                        "login": user.mt_login,
+                        "server": user.mt_server,
+                        "reason": "recover_from_stale_terminal",
+                    }
+                )
+                logger.info(
+                    f"Recovered user {user.id} from stale MetaApi account {meta_account_id} "
+                    f"to healthy sibling {replacement_id}"
+                )
+                return user
+
         user.mt_status = "error" if live_status in ("DEPLOY_FAILED", "ERROR") else "disconnected"
         user.can_trade = False
         closed_count = force_close_orphaned_trades_for_user(
@@ -150,7 +253,7 @@ async def get_user_profile(user=Depends(get_current_user), db: Session = Depends
         "mt_server": user.mt_server,
         "mt_broker": user.mt_broker,
         "mt_status": user.mt_status,
-        "can_trade": bool(getattr(user, "can_trade", True)),
+        "can_trade": bool(getattr(user, "can_trade", False)),
         "ea_token_active": bool(user.ea_token)
     }
 
@@ -262,7 +365,11 @@ async def connect_mt5(
     db.commit()
 
     # 2. Check for existing MetaApi account (prevent duplicates)
-    existing = await find_existing_account(req.mt_login, req.mt_server)
+    existing = await find_existing_account(
+        req.mt_login,
+        req.mt_server,
+        preferred_account_id=getattr(user, "meta_account_id", None),
+    )
     if existing:
         account_id = existing["account_id"]
         logger.info(f"Reusing existing MetaApi account {account_id} for user {user.id}")
@@ -340,5 +447,5 @@ async def get_mt_status(user=Depends(get_current_user), db: Session = Depends(ge
         "mt_server": getattr(user, "mt_server", None),
         "mt_login": getattr(user, "mt_login", None),
         "meta_account_id": getattr(user, "meta_account_id", None),
-        "can_trade": bool(getattr(user, "can_trade", True)),
+        "can_trade": bool(getattr(user, "can_trade", False)),
     }

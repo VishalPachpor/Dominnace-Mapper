@@ -10,6 +10,7 @@ const navItems = [
     { href: "/admin/trades", label: "Trades", icon: "history" },
     { href: "/admin/strategies", label: "Strategies", icon: "monitoring" },
     { href: "/admin/plans", label: "Plans", icon: "payments" },
+    { href: "/admin/metaapi", label: "MetaApi", icon: "hub" },
     { href: "/admin/system", label: "System Health", icon: "health_and_safety" },
 ];
 

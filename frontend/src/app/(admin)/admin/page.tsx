@@ -46,7 +46,6 @@ export default function AdminOverview() {
     const [system, setSystem] = useState<SystemStatus | null>(null);
     const [plans, setPlans] = useState<PlanDetail[]>([]);
     const [recentTrades, setRecentTrades] = useState<GlobalTrade[]>([]);
-    const [loading, setLoading] = useState(true);
 
     const fetchData = useCallback(async () => {
         try {
@@ -61,15 +60,18 @@ export default function AdminOverview() {
             if (tradeRes.status === "fulfilled") setRecentTrades(tradeRes.value.data.slice(0, 5));
         } catch (err) {
             console.error("Admin dashboard fetch failed", err);
-        } finally {
-            setLoading(false);
         }
     }, []);
 
     useEffect(() => {
-        fetchData();
+        const initialFetch = setTimeout(() => {
+            void fetchData();
+        }, 0);
         const interval = setInterval(fetchData, 30000);
-        return () => clearInterval(interval);
+        return () => {
+            clearTimeout(initialFetch);
+            clearInterval(interval);
+        };
     }, [fetchData]);
 
     const totalRevenue = plans.reduce((acc, p) => acc + p.monthly_revenue, 0);
@@ -118,6 +120,24 @@ export default function AdminOverview() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Daily Activity */}
                 <div className="lg:col-span-8 flex flex-col gap-6">
+                    <div className="bg-surface-container-low rounded-xl p-5 border border-outline-variant/10">
+                        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                            <div>
+                                <h2 className="text-lg font-bold text-on-surface">MetaApi Terminal Control</h2>
+                                <p className="text-sm text-on-surface-variant mt-1">
+                                    Inspect canonical terminal selection, duplicate bindings, and cleanup candidates.
+                                </p>
+                            </div>
+                            <Link
+                                href="/admin/metaapi"
+                                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-on-primary text-xs font-bold uppercase tracking-wider hover:opacity-90 transition-opacity w-fit"
+                            >
+                                <span className="material-symbols-outlined text-[18px]">hub</span>
+                                Open MetaApi Inspector
+                            </Link>
+                        </div>
+                    </div>
+
                     <div className="bg-surface-container-low rounded-xl p-6 border border-outline-variant/10">
                         <h2 className="text-lg font-bold text-on-surface mb-6">Activity Today</h2>
                         <div className="grid grid-cols-2 gap-6">

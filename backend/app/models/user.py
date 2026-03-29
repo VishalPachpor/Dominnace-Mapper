@@ -41,7 +41,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     trading_paused = Column(Boolean, default=False)
-    can_trade = Column(Boolean, default=True)
+    can_trade = Column(Boolean, default=False)
     
     # Tracking & Status
     status = Column(String(20), default="active") # active | suspended | banned

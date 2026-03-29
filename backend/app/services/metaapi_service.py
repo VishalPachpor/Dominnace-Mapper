@@ -14,6 +14,7 @@ import json
 import asyncio
 import logging
 import httpx
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from app.utils.crypto_util import decrypt_password
 
@@ -76,38 +77,381 @@ def resolve_symbol(symbol: str) -> str:
     return symbol  # Unknown symbol — pass through as-is
 
 
+def _log_structured(event: str, **fields) -> None:
+    try:
+        logger.info("%s %s", event, json.dumps(fields, default=str, sort_keys=True), extra=fields)
+    except Exception:
+        logger.info("%s %s", event, fields)
+
+
+def _has_account_data(info: dict | None) -> bool:
+    return isinstance(info, dict) and any(
+        info.get(key) is not None for key in ("balance", "equity", "marginFree", "freeMargin")
+    )
+
+
+def _parse_metaapi_dt(raw) -> datetime | None:
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _account_fingerprint(account: dict) -> str:
+    return ":".join(
+        str(account.get(part, "")).strip()
+        for part in ("login", "server", "type", "name")
+    )
+
+
 # ─── Account Lifecycle ────────────────────────────────────────────────────────
 
-async def find_existing_account(login: str, server: str) -> Optional[dict]:
+async def _list_metaapi_accounts() -> list[dict]:
+    _track_call("list_accounts")
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{PROVISION_URL}/users/current/accounts",
+            headers=_headers()
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
+
+async def find_existing_account(
+    login: str,
+    server: str,
+    preferred_account_id: str | None = None,
+) -> Optional[dict]:
     """
     Search MetaApi for an existing account with the same login + server.
-    Returns the account dict if found and healthy, None otherwise.
-    Prevents duplicate terminals from being provisioned on reconnect.
+    When duplicates exist, prefer the healthiest live account and bias toward the
+    currently linked account when it is still healthy.
     """
-    _track_call("find_existing_account")
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{PROVISION_URL}/users/current/accounts",
-                headers=_headers()
-            )
-            resp.raise_for_status()
-            accounts = resp.json()
+        accounts = await _list_metaapi_accounts()
+        matches: list[dict] = []
 
         for acct in accounts:
             acct_login = str(acct.get("login", ""))
             acct_server = acct.get("server", "")
+            if acct_login != str(login) or acct_server != server:
+                continue
+
+            acct_id = acct.get("_id") or acct.get("id")
             acct_state = acct.get("state", "")
-            if acct_login == str(login) and acct_server == server:
-                acct_id = acct.get("_id") or acct.get("id")
-                logger.info(
-                    f"Found existing MetaApi account {acct_id} for login={login} "
-                    f"server={server} state={acct_state}"
-                )
-                return {"account_id": acct_id, "state": acct_state}
+            matches.append({
+                "account_id": acct_id,
+                "state": acct_state,
+                "name": acct.get("name", ""),
+            })
+
+        if not matches:
+            return None
+
+        ranked: list[tuple[tuple[int, int, int, int], dict]] = []
+        for acct in matches:
+            acct_id = acct["account_id"]
+            acct_state = acct.get("state", "")
+            is_live = 1 if acct_state in ("CONNECTED", "DEPLOYED") else 0
+            is_preferred = 1 if preferred_account_id and acct_id == preferred_account_id else 0
+            has_account_data = 0
+            open_positions = 0
+            if is_live:
+                try:
+                    info = await get_account_information(acct_id)
+                    has_account_data = 1 if _has_account_data(info) else 0
+                    positions = await get_open_positions(acct_id)
+                    open_positions = 1 if positions else 0
+                except Exception:
+                    has_account_data = 0
+            acct["health_score"] = (has_account_data * 30) + (is_live * 50) + (open_positions * 20) + (is_preferred * 5)
+            acct["selection_reason"] = {
+                "has_account_data": bool(has_account_data),
+                "is_live": bool(is_live),
+                "has_open_positions": bool(open_positions),
+                "is_preferred": bool(is_preferred),
+            }
+            ranked.append(acct)
+
+        ranked.sort(key=lambda item: item.get("health_score", 0), reverse=True)
+        best = ranked[0]
+        _log_structured(
+            "metaapi_account_selected",
+            login=str(login),
+            server=server,
+            selected_account_id=best["account_id"],
+            selected_state=best.get("state"),
+            selected_score=best.get("health_score", 0),
+            preferred_account_id=preferred_account_id,
+            candidate_ids=[acct["account_id"] for acct in ranked],
+            candidate_scores={
+                acct["account_id"]: acct.get("health_score", 0)
+                for acct in ranked
+            },
+        )
+        return best
     except Exception as e:
         logger.warning(f"Could not search for existing MetaApi accounts: {e}")
     return None
+
+
+async def cleanup_duplicate_metaapi_accounts() -> dict:
+    """
+    Undeploy-only cleanup pass for duplicate MetaApi terminals.
+    Guardrails:
+      - never touch canonical account for a login/server pair
+      - never touch linked accounts
+      - never touch accounts with open positions
+      - never touch accounts with recent deals (24h)
+      - never touch freshly created accounts (2h grace) when createdAt exists
+    """
+    from app.database.db import SessionLocal
+    from app.models.user import User
+
+    db = SessionLocal()
+    groups_processed = 0
+    undeployed_count = 0
+    skipped_groups = 0
+    try:
+        accounts = await _list_metaapi_accounts()
+        linked_ids = {
+            row[0]
+            for row in db.query(User.meta_account_id).filter(User.meta_account_id.isnot(None)).all()
+            if row[0]
+        }
+
+        grouped: dict[tuple[str, str], list[dict]] = {}
+        for acct in accounts:
+            login = str(acct.get("login", "")).strip()
+            server = str(acct.get("server", "")).strip()
+            if not login or not server:
+                continue
+            grouped.setdefault((login, server), []).append(acct)
+
+        now = datetime.now(timezone.utc)
+        for (login, server), group in grouped.items():
+            if len(group) <= 1:
+                continue
+            groups_processed += 1
+
+            canonical = await find_existing_account(login, server)
+            canonical_id = canonical.get("account_id") if canonical else None
+            deleted: list[str] = []
+            skipped: dict[str, str] = {}
+
+            for acct in group:
+                acct_id = acct.get("_id") or acct.get("id")
+                if not acct_id:
+                    continue
+                if acct_id == canonical_id:
+                    skipped[str(acct_id)] = "canonical"
+                    continue
+                if acct_id in linked_ids:
+                    skipped[str(acct_id)] = "linked_to_user"
+                    continue
+
+                created_at = _parse_metaapi_dt(acct.get("createdAt") or acct.get("created_at"))
+                if created_at and (now - created_at) < timedelta(hours=2):
+                    skipped[str(acct_id)] = "within_grace_period"
+                    continue
+
+                try:
+                    positions = await get_open_positions(str(acct_id))
+                    if positions:
+                        skipped[str(acct_id)] = "has_open_positions"
+                        continue
+                except Exception:
+                    skipped[str(acct_id)] = "positions_check_failed"
+                    continue
+
+                try:
+                    deals = await get_deal_history(str(acct_id), days=1)
+                    recent_deals = [d for d in deals if _parse_metaapi_dt(d.get("time")) and (now - _parse_metaapi_dt(d.get("time"))) < timedelta(hours=24)]
+                    if recent_deals:
+                        skipped[str(acct_id)] = "recent_deals"
+                        continue
+                except Exception:
+                    skipped[str(acct_id)] = "deals_check_failed"
+                    continue
+
+                try:
+                    await undeploy_account(str(acct_id))
+                    deleted.append(str(acct_id))
+                except Exception as e:
+                    skipped[str(acct_id)] = f"undeploy_failed:{type(e).__name__}"
+
+            undeployed_count += len(deleted)
+            if not deleted and skipped:
+                skipped_groups += 1
+            _log_structured(
+                "metaapi_cleanup",
+                group=f"{login}:{server}",
+                fingerprint=_account_fingerprint(group[0]),
+                canonical_account_id=canonical_id,
+                undeployed=deleted,
+                skipped=skipped,
+                total_candidates=len(group),
+                reason="stale_duplicate",
+            )
+    finally:
+        db.close()
+    return {
+        "groups_processed": groups_processed,
+        "undeployed_count": undeployed_count,
+        "skipped_groups": skipped_groups,
+    }
+
+
+async def cleanup_duplicate_metaapi_accounts_loop() -> None:
+    interval_hours = int(os.getenv("METAAPI_CLEANUP_INTERVAL_HOURS", "6"))
+    logger.info("[MetaApiCleanup] Duplicate cleanup worker started. Interval: %sh", interval_hours)
+    while True:
+        try:
+            await cleanup_duplicate_metaapi_accounts()
+        except Exception as e:
+            logger.error(f"[MetaApiCleanup] Error: {e}")
+        await asyncio.sleep(max(interval_hours, 1) * 3600)
+
+
+async def inspect_metaapi_account_groups(linked_user_by_account: dict[str, str | None]) -> list[dict]:
+    """
+    Read-only admin inspection of MetaApi account groups. Uses the same scoring
+    and cleanup guardrails as selection/cleanup logic so the admin view matches
+    actual system behavior.
+    """
+    accounts = await _list_metaapi_accounts()
+    now = datetime.now(timezone.utc)
+    grouped: dict[tuple[str, str], list[dict]] = {}
+
+    for acct in accounts:
+        login = str(acct.get("login", "")).strip()
+        server = str(acct.get("server", "")).strip()
+        if not login or not server:
+            continue
+        grouped.setdefault((login, server), []).append(acct)
+
+    groups: list[dict] = []
+    for (login, server), group in grouped.items():
+        canonical = await find_existing_account(login, server)
+        canonical_id = canonical.get("account_id") if canonical else None
+        canonical_reason = canonical.get("selection_reason") if canonical else None
+        inspected_accounts: list[dict] = []
+        cleanup_candidates = 0
+        active_accounts = 0
+
+        for acct in group:
+            acct_id = str(acct.get("_id") or acct.get("id") or "")
+            state = acct.get("state", "UNKNOWN")
+            is_live = state in ("CONNECTED", "DEPLOYED")
+            created_at = _parse_metaapi_dt(acct.get("createdAt") or acct.get("created_at"))
+            age_minutes = int((now - created_at).total_seconds() // 60) if created_at else None
+            linked_user_id = linked_user_by_account.get(acct_id)
+
+            has_account_data = False
+            has_open_positions = False
+            recent_activity = False
+            score_breakdown = {
+                "connected": 50 if is_live else 0,
+                "account_data": 0,
+                "recent_activity": 0,
+                "positions": 0,
+                "preferred": 5 if acct_id == canonical_id else 0,
+            }
+
+            if is_live:
+                try:
+                    info = await get_account_information(acct_id)
+                    has_account_data = _has_account_data(info)
+                    if has_account_data:
+                        score_breakdown["account_data"] = 30
+                except Exception:
+                    has_account_data = False
+
+                try:
+                    positions = await get_open_positions(acct_id)
+                    has_open_positions = bool(positions)
+                    if has_open_positions:
+                        score_breakdown["positions"] = 20
+                except Exception:
+                    has_open_positions = False
+
+            try:
+                deals = await get_deal_history(acct_id, days=1)
+                recent_activity = any(
+                    (deal_time := _parse_metaapi_dt(d.get("time"))) is not None and (now - deal_time) < timedelta(hours=24)
+                    for d in deals
+                )
+                if recent_activity:
+                    score_breakdown["recent_activity"] = 10
+            except Exception:
+                recent_activity = False
+
+            score = sum(score_breakdown.values())
+            if is_live:
+                active_accounts += 1
+
+            cleanup_candidate = False
+            cleanup_reason = None
+            if acct_id != canonical_id:
+                if linked_user_id:
+                    cleanup_reason = "linked_to_user"
+                elif has_open_positions:
+                    cleanup_reason = "has_open_positions"
+                elif recent_activity:
+                    cleanup_reason = "recent_deals"
+                elif created_at and (now - created_at) < timedelta(hours=2):
+                    cleanup_reason = "within_grace_period"
+                else:
+                    cleanup_candidate = True
+                    cleanup_reason = "stale_duplicate"
+                    cleanup_candidates += 1
+            else:
+                cleanup_reason = "canonical"
+
+            inspected_accounts.append({
+                "id": acct_id,
+                "state": state,
+                "score": score,
+                "score_breakdown": score_breakdown,
+                "selection_reason": canonical_reason if acct_id == canonical_id else None,
+                "is_canonical": acct_id == canonical_id,
+                "linked_user_id": linked_user_id,
+                "has_account_data": has_account_data,
+                "has_open_positions": has_open_positions,
+                "recent_activity": recent_activity,
+                "age_minutes": age_minutes,
+                "cleanup_candidate": cleanup_candidate,
+                "cleanup_reason": cleanup_reason,
+                "name": acct.get("name"),
+                "type": acct.get("type"),
+                "server": acct.get("server"),
+                "login": str(acct.get("login", "")),
+            })
+
+        inspected_accounts.sort(
+            key=lambda a: (a["is_canonical"], a["score"], -(a["age_minutes"] or 0)),
+            reverse=True,
+        )
+        groups.append({
+            "key": f"{login}|{server}",
+            "login": login,
+            "server": server,
+            "canonical_account_id": canonical_id,
+            "accounts": inspected_accounts,
+            "summary": {
+                "total_accounts": len(group),
+                "active_accounts": active_accounts,
+                "cleanup_candidates": cleanup_candidates,
+            },
+        })
+
+    groups.sort(key=lambda g: (g["summary"]["cleanup_candidates"], g["summary"]["total_accounts"], g["key"]), reverse=True)
+    return groups
 
 
 async def provision_account(user) -> str:
@@ -329,7 +673,7 @@ async def cache_all_account_statuses():
                                 f"account healthy (balance={account_info.get('balance')})"
                             )
                         else:
-                            changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
+                            changed = user.mt_status != "connected" or getattr(user, "can_trade", False) is not False
                             user.mt_status = "connected"
                             user.can_trade = False
                             if changed:
@@ -337,7 +681,7 @@ async def cache_all_account_statuses():
                                 logger.info(f"[StatusPoller] User {user.id} is connected but trading_paused=true and no account data; kept non-tradable")
                         continue
 
-                    changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is False
+                    changed = user.mt_status != "connected" or getattr(user, "can_trade", False) is False
                     user.mt_status = "connected"
                     user.can_trade = True
                     if changed:
@@ -345,7 +689,7 @@ async def cache_all_account_statuses():
                         logger.info(f"[StatusPoller] User {user.id} is connected")
                 else:
                     next_status = "error" if status in ("DEPLOY_FAILED", "ERROR") else "disconnected"
-                    changed = user.mt_status != next_status or getattr(user, "can_trade", True) is True
+                    changed = user.mt_status != next_status or getattr(user, "can_trade", False) is True
                     user.mt_status = next_status
                     user.can_trade = False
                     if changed:

@@ -70,7 +70,7 @@ import os
 import sentry_sdk
 from prometheus_client import make_asgi_app
 
-from app.services.metaapi_service import cache_all_account_statuses
+from app.services.metaapi_service import cache_all_account_statuses, cleanup_duplicate_metaapi_accounts_loop
 
 # Initialize Sentry for error tracking
 sentry_dsn = os.getenv("SENTRY_DSN")
@@ -84,6 +84,7 @@ if sentry_dsn:
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(cache_all_account_statuses())
+    asyncio.create_task(cleanup_duplicate_metaapi_accounts_loop())
 
 @app.get("/health")
 def health_check():
