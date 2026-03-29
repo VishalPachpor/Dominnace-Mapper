@@ -42,22 +42,37 @@ interface GlobalTrade {
     created_at: string;
 }
 
+interface StrategySummary {
+    bot_slug: string;
+    bot_name: string;
+    is_active: boolean;
+    total_trades: number;
+    total_pnl: number;
+    wins: number;
+    losses: number;
+    open_trades: number;
+    running_pnl: number;
+}
+
 export default function AdminOverview() {
     const [system, setSystem] = useState<SystemStatus | null>(null);
     const [plans, setPlans] = useState<PlanDetail[]>([]);
     const [recentTrades, setRecentTrades] = useState<GlobalTrade[]>([]);
+    const [strategies, setStrategies] = useState<StrategySummary[]>([]);
 
     const fetchData = useCallback(async () => {
         try {
-            const [sysRes, planRes, tradeRes] = await Promise.allSettled([
+            const [sysRes, planRes, tradeRes, stratRes] = await Promise.allSettled([
                 api.get("/admin/system"),
                 api.get("/admin/plans"),
                 api.get("/admin/trades"),
+                api.get("/admin/strategies"),
             ]);
 
             if (sysRes.status === "fulfilled") setSystem(sysRes.value.data);
             if (planRes.status === "fulfilled") setPlans(planRes.value.data);
             if (tradeRes.status === "fulfilled") setRecentTrades(tradeRes.value.data.slice(0, 5));
+            if (stratRes.status === "fulfilled") setStrategies(Array.isArray(stratRes.value.data) ? stratRes.value.data : []);
         } catch (err) {
             console.error("Admin dashboard fetch failed", err);
         }
@@ -156,6 +171,43 @@ export default function AdminOverview() {
                                 <span className="material-symbols-outlined text-secondary text-4xl opacity-50">show_chart</span>
                             </div>
                         </div>
+                    </div>
+
+                    {/* Strategy Performance Summary */}
+                    <div className="bg-surface-container-low rounded-xl border border-outline-variant/10 overflow-hidden">
+                        <div className="p-6 border-b border-outline-variant/10 flex items-center justify-between">
+                            <h2 className="text-sm font-bold uppercase tracking-wider text-on-surface">Strategy Performance</h2>
+                            <Link href="/admin/strategies" className="text-xs text-primary font-bold hover:underline">View Details</Link>
+                        </div>
+                        {strategies.length === 0 ? (
+                            <div className="p-6 text-center text-sm text-on-surface-variant">
+                                No strategies found. Seed bots or wait for trade data.
+                            </div>
+                        ) : (
+                            <div className="divide-y divide-outline-variant/5">
+                                {strategies.map((s) => {
+                                    const winRate = s.total_trades > 0 ? ((s.wins / s.total_trades) * 100).toFixed(1) : "0";
+                                    const pnlPositive = (s.total_pnl || 0) >= 0;
+                                    return (
+                                        <div key={s.bot_slug} className="p-4 flex items-center justify-between hover:bg-surface-container-high/30 transition-colors">
+                                            <div className="flex items-center gap-3">
+                                                <div className={`w-2 h-2 rounded-full ${s.open_trades > 0 ? "bg-secondary animate-pulse" : "bg-outline-variant"}`} />
+                                                <div>
+                                                    <span className="text-sm font-bold text-on-surface">{s.bot_name}</span>
+                                                    <div className="text-[10px] text-on-surface-variant">
+                                                        {s.total_trades} trades | {winRate}% win
+                                                        {s.open_trades > 0 && <span className="text-secondary ml-1">| {s.open_trades} open</span>}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <span className={`text-sm font-bold font-mono ${pnlPositive ? "text-secondary" : "text-tertiary"}`}>
+                                                {pnlPositive ? "+" : ""}{(s.total_pnl || 0).toFixed(2)}
+                                            </span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
 
                     {/* Latest Global Trades */}

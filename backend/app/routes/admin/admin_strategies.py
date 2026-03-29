@@ -1,12 +1,17 @@
+import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import func, case
 from collections import defaultdict
 from app.database.db import get_db
 from app.models.user import User
 from app.models.bot import Bot
+from app.models.trade import Trade
 from app.models.strategy_stats import StrategyStats
 from app.models.trade_state import TradeState
 from app.utils.security import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -65,7 +70,7 @@ def get_strategy_stats(db: Session = Depends(get_db), admin: User = Depends(requ
     open_states = db.query(TradeState).filter(
         TradeState.status.in_(["OPEN", "BE_MOVED"])
     ).all()
-    
+
     # 3a. Fix N+1 Query: Fetch all related positions in a single query
     pos_ids = [s.position_id for s in open_states if s.position_id]
     positions_map = {}
@@ -80,12 +85,41 @@ def get_strategy_stats(db: Session = Depends(get_db), admin: User = Depends(requ
         if pos:
             live_map[state.bot_slug]["running_pnl"] += pos.unrealized_pnl or 0.0
 
+    # 3b. Fallback: derive strategy data from the trades table when
+    # StrategyStats has not been populated yet (no closed trades through
+    # the trade monitor) but trades do exist.
+    trades_map: dict[str, dict] = {}
+    trade_rows = (
+        db.query(
+            Bot.slug,
+            func.count(Trade.id).label("count"),
+            func.coalesce(func.sum(Trade.pnl), 0.0).label("pnl"),
+            func.sum(case((Trade.result == "WIN", 1), else_=0)).label("wins"),
+            func.sum(case((Trade.result == "LOSS", 1), else_=0)).label("losses"),
+        )
+        .join(Bot, Trade.bot_id == Bot.id)
+        .group_by(Bot.slug)
+        .all()
+    )
+    for slug, count, pnl, wins, losses in trade_rows:
+        trades_map[slug] = {
+            "total_trades": int(count or 0),
+            "total_pnl": float(pnl or 0.0),
+            "wins": int(wins or 0),
+            "losses": int(losses or 0),
+        }
+
+    logger.info(
+        "[Strategies] sources: bots=%d, stats=%d, live_states=%d, trade_rows=%d",
+        len(bots), len(stats_map), len(open_states), len(trades_map),
+    )
+
     # 4. Merge into unified response.
-    # Use bots as the preferred catalog, but fall back to live/stats slugs so
+    # Use bots as the preferred catalog, but fall back to live/stats/trades slugs so
     # strategies still appear even if the bots table is stale or missing rows.
     grouped_result = {}
     bot_by_slug = {bot.slug: bot for bot in bots}
-    discovered_slugs = set(bot_by_slug.keys()) | set(stats_map.keys()) | set(live_map.keys())
+    discovered_slugs = set(bot_by_slug.keys()) | set(stats_map.keys()) | set(live_map.keys()) | set(trades_map.keys())
 
     for raw_slug in discovered_slugs:
         bot = bot_by_slug.get(raw_slug)
@@ -105,13 +139,23 @@ def get_strategy_stats(db: Session = Depends(get_db), admin: User = Depends(requ
 
         s = stats_map.get(raw_slug)
         live = live_map.get(raw_slug, {"open_trades": 0, "running_pnl": 0.0})
+        t = trades_map.get(raw_slug, {})
 
         source_is_active = bool(bot.is_active) if bot else True
         bucket["is_active"] = bucket["is_active"] or source_is_active
-        bucket["total_trades"] += int(s.total_trades if s else 0)
-        bucket["wins"] += int(s.wins if s else 0)
-        bucket["losses"] += int(s.losses if s else 0)
-        bucket["total_pnl"] += float(s.total_pnl if s else 0.0)
+
+        # Prefer StrategyStats (authoritative), fall back to trades table aggregation
+        if s:
+            bucket["total_trades"] += int(s.total_trades or 0)
+            bucket["wins"] += int(s.wins or 0)
+            bucket["losses"] += int(s.losses or 0)
+            bucket["total_pnl"] += float(s.total_pnl or 0.0)
+        elif t:
+            bucket["total_trades"] += t["total_trades"]
+            bucket["wins"] += t["wins"]
+            bucket["losses"] += t["losses"]
+            bucket["total_pnl"] += t["total_pnl"]
+
         bucket["open_trades"] += int(live["open_trades"])
         bucket["running_pnl"] += float(live["running_pnl"])
 
