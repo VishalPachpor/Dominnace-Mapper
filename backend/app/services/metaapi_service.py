@@ -78,6 +78,38 @@ def resolve_symbol(symbol: str) -> str:
 
 # ─── Account Lifecycle ────────────────────────────────────────────────────────
 
+async def find_existing_account(login: str, server: str) -> Optional[dict]:
+    """
+    Search MetaApi for an existing account with the same login + server.
+    Returns the account dict if found and healthy, None otherwise.
+    Prevents duplicate terminals from being provisioned on reconnect.
+    """
+    _track_call("find_existing_account")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{PROVISION_URL}/users/current/accounts",
+                headers=_headers()
+            )
+            resp.raise_for_status()
+            accounts = resp.json()
+
+        for acct in accounts:
+            acct_login = str(acct.get("login", ""))
+            acct_server = acct.get("server", "")
+            acct_state = acct.get("state", "")
+            if acct_login == str(login) and acct_server == server:
+                acct_id = acct.get("_id") or acct.get("id")
+                logger.info(
+                    f"Found existing MetaApi account {acct_id} for login={login} "
+                    f"server={server} state={acct_state}"
+                )
+                return {"account_id": acct_id, "state": acct_state}
+    except Exception as e:
+        logger.warning(f"Could not search for existing MetaApi accounts: {e}")
+    return None
+
+
 async def provision_account(user) -> str:
     """Creates a MetaApi cloud MT5 terminal for a user. Returns accountId."""
     password = decrypt_password(user.mt_password_enc)
@@ -278,12 +310,31 @@ async def cache_all_account_statuses():
                 # Keep DB aligned even after an account was previously healthy.
                 if status in ("DEPLOYED", "CONNECTED"):
                     if bool(getattr(user, "trading_paused", False)):
-                        changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
-                        user.mt_status = "connected"
-                        user.can_trade = False
-                        if changed:
+                        # Check if account is actually healthy — auto-recover if so
+                        try:
+                            account_info = await get_account_information(meta_id)
+                            has_valid_data = isinstance(account_info, dict) and any(
+                                account_info.get(key) is not None for key in ("balance", "equity", "marginFree", "freeMargin")
+                            )
+                        except Exception:
+                            has_valid_data = False
+
+                        if has_valid_data:
+                            user.trading_paused = False
+                            user.mt_status = "connected"
+                            user.can_trade = True
                             db.commit()
-                            logger.info(f"[StatusPoller] User {user.id} is connected but trading_paused=true; kept non-tradable")
+                            logger.info(
+                                f"[StatusPoller] Auto-recovered trading_paused for user {user.id}: "
+                                f"account healthy (balance={account_info.get('balance')})"
+                            )
+                        else:
+                            changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
+                            user.mt_status = "connected"
+                            user.can_trade = False
+                            if changed:
+                                db.commit()
+                                logger.info(f"[StatusPoller] User {user.id} is connected but trading_paused=true and no account data; kept non-tradable")
                         continue
 
                     changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is False

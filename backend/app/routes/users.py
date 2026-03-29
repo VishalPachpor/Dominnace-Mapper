@@ -28,15 +28,32 @@ async def _refresh_user_mt_state(user, db: Session):
 
         live_status = await get_account_status(meta_account_id, use_cache=False)
         if live_status in ("CONNECTED", "DEPLOYED"):
-            # Manual safety override: keep users non-tradable when paused.
+            # If trading_paused, check if account is actually healthy and auto-recover
             if bool(getattr(user, "trading_paused", False)):
-                changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
-                user.mt_status = "connected"
-                user.can_trade = False
-                if changed:
+                account_info = await get_account_information(meta_account_id)
+                has_valid_data = isinstance(account_info, dict) and any(
+                    account_info.get(key) is not None for key in ("balance", "equity", "marginFree", "freeMargin")
+                )
+                if has_valid_data:
+                    # Account is live with real data — the transient pause reason no longer applies
+                    user.trading_paused = False
+                    user.mt_status = "connected"
+                    user.can_trade = True
                     db.commit()
-                    logger.info(f"MT connected but trading_paused=true for user {user.id}; keeping non-tradable")
-                return user
+                    logger.info(
+                        f"Auto-recovered trading_paused for user {user.id}: "
+                        f"account healthy (balance={account_info.get('balance')}, equity={account_info.get('equity')})"
+                    )
+                    return user
+                else:
+                    # Paused AND no account data — stay non-tradable
+                    changed = user.mt_status != "connected" or getattr(user, "can_trade", True) is not False
+                    user.mt_status = "connected"
+                    user.can_trade = False
+                    if changed:
+                        db.commit()
+                        logger.info(f"MT connected but trading_paused=true and no account data for user {user.id}; keeping non-tradable")
+                    return user
 
             account_info = await get_account_information(meta_account_id)
             has_account_data = isinstance(account_info, dict) and any(
@@ -178,8 +195,18 @@ def delete_binance_key(user=Depends(get_current_user), db: Session = Depends(get
     return {"message": "Binance API keys revoked"}
 
 @router.delete("/api-key/mt5")
-def delete_mt5_key(user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """Revoke MT5 Connection."""
+async def delete_mt5_key(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Revoke MT5 Connection and undeploy the MetaApi terminal."""
+    # Undeploy the MetaApi terminal to free resources and prevent orphaned terminals
+    old_account_id = getattr(user, "meta_account_id", None)
+    if old_account_id:
+        try:
+            from app.services.metaapi_service import undeploy_account
+            await undeploy_account(old_account_id)
+            logger.info(f"Undeployed MetaApi terminal {old_account_id} for user {user.id}")
+        except Exception as e:
+            logger.warning(f"Failed to undeploy MetaApi terminal {old_account_id}: {e}")
+
     user.mt_login = None
     user.mt_password_enc = None
     user.mt_server = None
@@ -220,7 +247,9 @@ async def connect_mt5(
     Deployment is async — status transitions: connecting → deploying → connected.
     """
     from app.utils.crypto_util import encrypt_password
-    from app.services.metaapi_service import provision_account, deploy_account, poll_until_connected
+    from app.services.metaapi_service import (
+        provision_account, deploy_account, poll_until_connected, find_existing_account
+    )
 
     # 1. Save encrypted broker credentials
     user.mt_login = req.mt_login
@@ -232,7 +261,38 @@ async def connect_mt5(
     user.can_trade = True
     db.commit()
 
-    # 2. Provision cloud account
+    # 2. Check for existing MetaApi account (prevent duplicates)
+    existing = await find_existing_account(req.mt_login, req.mt_server)
+    if existing:
+        account_id = existing["account_id"]
+        logger.info(f"Reusing existing MetaApi account {account_id} for user {user.id}")
+        user.meta_account_id = account_id
+
+        # Ensure it's deployed
+        if existing["state"] not in ("DEPLOYED", "CONNECTED"):
+            user.mt_status = "deploying"
+            db.commit()
+            try:
+                await deploy_account(account_id)
+            except Exception as e:
+                logger.warning(f"Deploy call failed on reused account (may still be starting): {e}")
+            background_tasks.add_task(poll_until_connected, user.id, account_id, None)
+            return {
+                "message": "MT5 terminal is redeploying (reused existing account). Ready in ~90 seconds.",
+                "account_id": account_id,
+                "status": "deploying"
+            }
+        else:
+            user.mt_status = "connected"
+            user.can_trade = True
+            db.commit()
+            return {
+                "message": "MT5 terminal reconnected (reused existing account).",
+                "account_id": account_id,
+                "status": "connected"
+            }
+
+    # 3. Provision new cloud account
     try:
         account_id = await provision_account(user)
         user.meta_account_id = account_id
@@ -250,11 +310,11 @@ async def connect_mt5(
                 error_msg = e.response.text
         elif isinstance(e, httpx.ReadTimeout):
             error_msg = "MetaApi timed out validating your broker credentials. The server might be unreachable or the credentials may be incorrect."
-        
+
         logger.error(f"MetaApi provisioning failed for user {user.id}: {error_msg}")
         raise HTTPException(status_code=500, detail=f"MetaApi provisioning failed: {error_msg}")
 
-    # 3. Trigger deploy
+    # 4. Trigger deploy
     try:
         await deploy_account(account_id)
     except Exception as e:
