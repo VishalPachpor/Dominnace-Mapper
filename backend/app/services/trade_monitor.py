@@ -14,7 +14,10 @@ from app.services.trade_closer import force_close_orphaned_trades_for_user
 
 logger = logging.getLogger(__name__)
 
-BE_BUFFER_RATIO = 0.01
+# Profit-protection ladder tuned for BTC/crypto so winners are not clipped
+# too early by a tiny breakeven buffer.
+BE_TRIGGER_RATIO = 0.50
+BE_BUFFER_RATIO = 0.05
 
 
 def _original_dom_entry(state: TradeState) -> float:
@@ -153,7 +156,7 @@ class TradeMonitorService:
                 if triggered:
                     dom_length = float(state.dom_length or 0.0)
                     if dom_length <= 0 and state.be_trigger != state.entry_price:
-                        dom_length = abs(state.be_trigger - state.entry_price) / 0.35
+                        dom_length = abs(state.be_trigger - state.entry_price) / BE_TRIGGER_RATIO
                     be_buffer = dom_length * BE_BUFFER_RATIO
                     protected_sl = state.entry_price + be_buffer if state.side == "buy" else state.entry_price - be_buffer
                     logger.info(
@@ -389,9 +392,9 @@ class TradeMonitorService:
                 else entry_price + actual_risk
             )
             be_trigger = (
-                entry_price + (actual_risk * 0.35)
+                entry_price + (actual_risk * BE_TRIGGER_RATIO)
                 if reverse_side == "buy"
-                else entry_price - (actual_risk * 0.35)
+                else entry_price - (actual_risk * BE_TRIGGER_RATIO)
             )
 
             updated_stops = await self.engine.update_position_stops(

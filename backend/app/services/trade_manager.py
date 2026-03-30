@@ -10,6 +10,7 @@ from app.utils.telegram import send_telegram_message
 logger = logging.getLogger(__name__)
 
 MAX_ENTRY_DELAY_SECONDS = int(os.getenv("DOM_MAX_ENTRY_DELAY_SECONDS", "30"))
+BE_TRIGGER_RATIO = float(os.getenv("DOM_BE_TRIGGER_RATIO", "0.50"))
 
 class TradeManager:
 
@@ -366,9 +367,9 @@ class TradeManager:
                         actual_be_trigger = trade["be_trigger"]
                         if dom_length_for_be > 0:
                             if trade["side"] == "buy":
-                                actual_be_trigger = actual_entry + (dom_length_for_be * 0.35)
+                                actual_be_trigger = actual_entry + (dom_length_for_be * BE_TRIGGER_RATIO)
                             else:
-                                actual_be_trigger = actual_entry - (dom_length_for_be * 0.35)
+                                actual_be_trigger = actual_entry - (dom_length_for_be * BE_TRIGGER_RATIO)
 
                         new_trade = Trade(
                             id=pos_id,
@@ -510,12 +511,12 @@ class TradeManager:
         BUY:
             SL = dom_low                        (low of the dominance candle)
             TP = entry + dom_length             (dominance candle close + full candle length)
-            BE = entry + (dom_length * 0.35)    (move SL to protected BE at 35% of candle length)
+            BE = entry + (dom_length * 0.50)    (move SL to protected BE at 50% of candle length)
 
         SELL:
             SL = dom_high
             TP = entry - dom_length
-            BE = entry - (dom_length * 0.35)
+            BE = entry - (dom_length * 0.50)
         """
         # Remove exchange prefix if present (e.g., BINANCE:BTCUSDT -> BTCUSDT)
         if ":" in symbol:
@@ -533,11 +534,11 @@ class TradeManager:
             if action == "buy":
                 sl = dom_low                          # SL at bottom of DOM zone
                 tp = entry + dom_length               # TP = candle close + full zone range
-                be_trigger = entry + (dom_length * 0.35)
+                be_trigger = entry + (dom_length * BE_TRIGGER_RATIO)
             else:  # sell
                 sl = dom_high                         # SL at top of DOM zone
                 tp = entry - dom_length               # TP = candle close - full zone range
-                be_trigger = entry - (dom_length * 0.35)
+                be_trigger = entry - (dom_length * BE_TRIGGER_RATIO)
 
         elif dom_length > 0:
             # ── Fallback: old signals without explicit dom_high/dom_low ──────
@@ -545,11 +546,11 @@ class TradeManager:
             if action == "buy":
                 sl = price - dom_length
                 tp = price + dom_length
-                be_trigger = entry + (dom_length * 0.35)
+                be_trigger = entry + (dom_length * BE_TRIGGER_RATIO)
             else:
                 sl = price + dom_length
                 tp = price - dom_length
-                be_trigger = entry - (dom_length * 0.35)
+                be_trigger = entry - (dom_length * BE_TRIGGER_RATIO)
         else:
             sl, tp, be_trigger = 0, 0, 0
 

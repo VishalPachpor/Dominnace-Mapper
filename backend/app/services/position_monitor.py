@@ -1,3 +1,6 @@
+BE_TRIGGER_RATIO = 0.50
+
+
 def check_break_even(position, price):
     if not position.get("be_moved"):
         if position["side"] == "buy" and price >= position["be_trigger"]:
@@ -33,7 +36,7 @@ def reverse_trade(position):
         "entry": entry,
         "sl": sl,
         "tp": tp,
-        "be_trigger": entry - (risk * 0.35) if new_side == "sell" else entry + (risk * 0.35),
+        "be_trigger": entry - (risk * BE_TRIGGER_RATIO) if new_side == "sell" else entry + (risk * BE_TRIGGER_RATIO),
         "be_moved": False,
         "is_reversal": True
     }
